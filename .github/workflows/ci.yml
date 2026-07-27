@@ -1,0 +1,86 @@
+name: build
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Este cron NO es el que marca el ritmo de trabajo: el ritmo lo marca el
+    # bucle de runner.py, que barre cada pocos minutos durante toda la corrida.
+    # El cron solo sirve de red de seguridad: si por lo que sea la cadena de
+    # turnos se rompe, en menos de 10 min vuelve a arrancar sola.
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: write
+
+# El turno que está corriendo nunca se cancela; el que llega se queda esperando
+# y arranca en el mismo instante en que el anterior termina. Así se encadenan
+# los turnos y la cobertura es continua.
+concurrency:
+  group: main
+  cancel-in-progress: false
+
+jobs:
+  run:
+    # Interruptor de apagado: variable de repositorio  OFF = 1
+    if: ${{ vars.OFF != '1' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Load config
+        env:
+          CONFIG_B64: ${{ secrets.CONFIG_B64 }}
+        run: |
+          if [ -z "$CONFIG_B64" ]; then
+            echo "Falta el secreto CONFIG_B64." >&2
+            exit 1
+          fi
+          printf '%s' "$CONFIG_B64" | base64 -d > "$RUNNER_TEMP/cfg.env"
+          while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in ''|'#'*) continue ;; esac
+            key="${line%%=*}"
+            val="${line#*=}"
+            key="$(printf '%s' "$key" | tr -d '[:space:]')"
+            [ -z "$key" ] && continue
+            [ "$key" = "$line" ] && continue
+            if [ "${#val}" -ge 12 ]; then
+              echo "::add-mask::$val"
+            fi
+            printf '%s=%s\n' "$key" "$val" >> "$GITHUB_ENV"
+          done < "$RUNNER_TEMP/cfg.env"
+          rm -f "$RUNNER_TEMP/cfg.env"
+          echo "Config cargada."
+
+      - name: Restore state
+        run: python tools/pack.py unpack
+
+      - name: Run
+        env:
+          # El turno dura 55 min y el job corta a los 65: sobra margen para
+          # que el cierre y el guardado terminen tranquilos.
+          MAX_RUNTIME_SECONDS: "3300"
+          QUIET_LIFECYCLE: "1"
+        run: python runner.py
+
+      - name: Save state
+        if: always()
+        run: |
+          python tools/pack.py pack
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/store.b64 || true
+          if git diff --cached --quiet; then
+            echo "Sin cambios."
+          else
+            git commit -m "chore: update data [skip ci]"
+            git pull --rebase --autostash origin main || true
+            git push || true
+          fi
