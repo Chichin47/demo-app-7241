@@ -59,6 +59,33 @@ jobs:
           rm -f "$RUNNER_TEMP/cfg.env"
           echo "Config cargada."
 
+      # Segundo sobre, opcional. Sirve para cambiar solo un par de valores
+      # (por ejemplo los identificadores de las páginas) sin tener que rehacer
+      # el sobre grande. Lo que venga acá pisa lo que vino en CONFIG_B64.
+      - name: Load config extra
+        env:
+          CONFIG2_B64: ${{ secrets.CONFIG2_B64 }}
+        run: |
+          if [ -z "$CONFIG2_B64" ]; then
+            echo "Sin sobre extra."
+            exit 0
+          fi
+          printf '%s' "$CONFIG2_B64" | base64 -d > "$RUNNER_TEMP/cfg2.env"
+          while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in ''|'#'*) continue ;; esac
+            key="${line%%=*}"
+            val="${line#*=}"
+            key="$(printf '%s' "$key" | tr -d '[:space:]')"
+            [ -z "$key" ] && continue
+            [ "$key" = "$line" ] && continue
+            if [ "${#val}" -ge 12 ]; then
+              echo "::add-mask::$val"
+            fi
+            printf '%s=%s\n' "$key" "$val" >> "$GITHUB_ENV"
+          done < "$RUNNER_TEMP/cfg2.env"
+          rm -f "$RUNNER_TEMP/cfg2.env"
+          echo "Sobre extra cargado."
+
       - name: Restore state
         run: python tools/pack.py unpack
 
