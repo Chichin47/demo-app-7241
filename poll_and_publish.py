@@ -135,6 +135,11 @@ def can_publish_now():
 def graph_get(path, token, **params):
     params["access_token"] = token
     r = requests.get(f"https://graph.facebook.com/{GRAPH_VERSION}/{path}", params=params, timeout=30)
+    if r.status_code >= 400:
+        # Sin esto, el traceback solo dice "400 Bad Request" y no se sabe si es
+        # el token, el permiso o el id. El cuerpo de la respuesta sí lo dice.
+        detalle = (r.text or "")[:800]
+        log(f"Graph respondió {r.status_code} en /{path}: {detalle}")
     r.raise_for_status()
     return r.json()
 
