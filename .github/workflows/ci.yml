@@ -62,6 +62,12 @@ jobs:
       - name: Restore state
         run: python tools/pack.py unpack
 
+      # Paso corto y aparte: su log se ve al instante, sin esperar al proceso
+      # largo. Nunca corta el turno aunque falle.
+      - name: Check
+        continue-on-error: true
+        run: python tools/diag.py
+
       - name: Run
         env:
           # El turno dura 55 min y el job corta a los 65: sobra margen para
