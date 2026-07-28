@@ -6,7 +6,10 @@ on:
     # Este cron NO es el que marca el ritmo de trabajo: el ritmo lo marca el
     # bucle de runner.py, que barre cada pocos minutos durante toda la corrida.
     # El cron solo sirve de red de seguridad: si por lo que sea la cadena de
-    # turnos se rompe, en menos de 10 min vuelve a arrancar sola.
+    # turnos se rompe, vuelve a arrancar sola. Ojo: GitHub no garantiza que
+    # los turnos programados salgan puntuales (a veces se saltan varios
+    # seguidos cuando está cargado), por eso el turno dura casi 6 horas: así
+    # se depende lo menos posible de este cron.
     - cron: "*/10 * * * *"
 
 permissions:
@@ -24,7 +27,7 @@ jobs:
     # Interruptor de apagado: variable de repositorio  OFF = 1
     if: ${{ vars.OFF != '1' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -112,9 +115,11 @@ jobs:
 
       - name: Run
         env:
-          # El turno dura 55 min y el job corta a los 65: sobra margen para
-          # que el cierre y el guardado terminen tranquilos.
-          MAX_RUNTIME_SECONDS: "3300"
+          # El turno dura 5 h 50 min y el job corta a las 5 h 55: sobra
+          # margen para que el cierre y el guardado terminen tranquilos.
+          # Turnos largos = menos relevos = menos ocasiones de que el
+          # relevo no arranque. GitHub permite hasta 6 h por turno.
+          MAX_RUNTIME_SECONDS: "21000"
           QUIET_LIFECYCLE: "1"
         run: python runner.py
 
