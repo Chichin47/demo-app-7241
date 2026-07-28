@@ -2,6 +2,12 @@ name: build
 
 on:
   workflow_dispatch:
+  # Cualquier cambio subido al repositorio arranca el bot al instante. Sirve
+  # de arranque manual: con solo subir algo vuelve a la vida, sin esperar al
+  # programador. (Los guardados del propio bot NO cuentan: los hace con la
+  # llave interna de GitHub, y esos empujes nunca disparan un turno nuevo.)
+  push:
+    branches: [main]
   schedule:
     # Este cron NO es el que marca el ritmo de trabajo: el ritmo lo marca el
     # bucle de runner.py, que barre cada pocos minutos durante toda la corrida.
@@ -30,6 +36,31 @@ jobs:
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
+
+      # El relevo se pide AL PRINCIPIO del turno, no al final. Así queda uno
+      # esperando en la puerta desde el minuto cero: pase lo que pase con este
+      # turno (que se caiga, que lo corten, que se quede colgado), el siguiente
+      # entra solo apenas se libere el puesto. Sin esto dependemos de que el
+      # programador de GitHub dispare, y GitHub no garantiza que lo haga.
+      - name: Queue next
+        continue-on-error: true
+        env:
+          RELAY_TOKEN: ${{ secrets.RELAY_TOKEN }}
+        run: |
+          if [ -z "$RELAY_TOKEN" ]; then
+            echo "Sin llave de relevo; queda solo el programador de GitHub."
+            exit 0
+          fi
+          codigo=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $RELAY_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/dispatches" \
+            -d '{"ref":"main"}')
+          if [ "$codigo" = "204" ]; then
+            echo "Relevo encolado: el siguiente turno ya está esperando."
+          else
+            echo "No se pudo encolar el relevo (código $codigo)."
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -120,7 +151,11 @@ jobs:
           # Turnos largos = menos relevos = menos ocasiones de que el
           # relevo no arranque. GitHub permite hasta 6 h por turno.
           MAX_RUNTIME_SECONDS: "21000"
-          QUIET_LIFECYCLE: "1"
+          # Avisa por Telegram cuando arranca y cuando cierra cada turno. Con
+          # turnos de 6 h son 8 avisos al día, y sirven de señal de vida: si
+          # llega el 🔴 de cierre y en un par de minutos no llega el 🟢 del
+          # relevo, es que el relevo no arrancó.
+          QUIET_LIFECYCLE: "0"
         run: python runner.py
 
       # Guardado final del turno. El runner ya va guardando en cada ciclo;
