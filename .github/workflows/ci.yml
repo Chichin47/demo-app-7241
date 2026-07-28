@@ -118,34 +118,9 @@ jobs:
           QUIET_LIFECYCLE: "1"
         run: python runner.py
 
-      # Al guardar nunca se pisa lo que haya en el repositorio: se UNE. Lo
-      # publicado queda siendo la suma de las dos versiones, así ningún post
-      # se pierde de la lista y por lo tanto ninguno se repite. Si otro turno
-      # guardó primero, se vuelve a intentar sobre lo nuevo.
+      # Guardado final del turno. El runner ya va guardando en cada ciclo;
+      # esto es el cierre, por si el último ciclo alcanzó a publicar algo.
+      # Nunca pisa lo que haya en el repositorio: lo UNE (ver tools/guardar.sh).
       - name: Save state
         if: always()
-        run: |
-          python tools/pack.py pack
-          cp data/store.b64 "$RUNNER_TEMP/local.b64"
-          cp tools/merge.py "$RUNNER_TEMP/merge.py"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          for intento in 1 2 3 4 5; do
-            git fetch origin +refs/heads/main:refs/remotes/origin/main || true
-            git checkout -f -B guardado origin/main
-            git show origin/main:data/store.b64 > "$RUNNER_TEMP/remote.b64" 2>/dev/null || : > "$RUNNER_TEMP/remote.b64"
-            python "$RUNNER_TEMP/merge.py" "$RUNNER_TEMP/remote.b64" "$RUNNER_TEMP/local.b64" data/store.b64
-            git add -f data/store.b64
-            if git diff --cached --quiet; then
-              echo "Sin cambios."
-              exit 0
-            fi
-            git commit -m "chore: update data [skip ci]"
-            if git push origin HEAD:main; then
-              echo "Estado guardado."
-              exit 0
-            fi
-            echo "Otro turno guardó primero; reintento ($intento)."
-            sleep 5
-          done
-          echo "No se pudo guardar el estado." >&2
+        run: bash tools/guardar.sh

@@ -46,7 +46,38 @@ def volcar(obj):
     return json.dumps(obj, ensure_ascii=False, indent=2)
 
 
-RANGO = {"scheduled": 0, "pending": 0, "publishing": 1, "done": 2}
+# Cuanto más adelantado el estado de un envío, más manda. Así, si en una copia
+# ya salió publicado ('done'), esa gana siempre y no se vuelve a publicar; y si
+# en una ya elegiste la hora ('scheduled'), no se pierde esa elección.
+RANGO = {"awaiting": 0, "pending": 0, "scheduled": 1, "publishing": 2, "done": 3}
+
+
+def _canon(o):
+    """Deja el dato en una forma comparable: claves ordenadas y listas ordenadas."""
+    if isinstance(o, dict):
+        return {k: _canon(v) for k, v in sorted(o.items())}
+    if isinstance(o, list):
+        items = [_canon(x) for x in o]
+        try:
+            items.sort(key=lambda x: json.dumps(x, sort_keys=True, ensure_ascii=False))
+        except Exception:  # noqa: BLE001
+            pass
+        return items
+    return o
+
+
+def firma(bulto):
+    """Resumen comparable del estado, sin depender de cómo esté escrito el texto."""
+    salida = {}
+    for k, v in (bulto or {}).items():
+        if isinstance(v, str):
+            try:
+                salida[k] = _canon(json.loads(v))
+                continue
+            except Exception:  # noqa: BLE001
+                pass
+        salida[k] = _canon(v)
+    return json.dumps(salida, sort_keys=True, ensure_ascii=False)
 
 
 def unir_cola(remoto, local):
@@ -121,6 +152,12 @@ def main():
 
         pu = len(j(final["processed_ids.json"], {}).get("processed", []))
         print(f"Unido: {pu} post(s) procesados, {len(mr)} publicado(s).")
+
+        # Si lo que hay arriba ya contiene todo lo nuestro, no hay nada que
+        # subir. El 3 es la señal para que el guardado ni siquiera haga commit.
+        if firma(final) == firma(R):
+            print("Sin novedades; no hace falta guardar.")
+            return 3
 
     crudo = json.dumps(final, ensure_ascii=False).encode("utf-8")
     b64 = base64.b64encode(zlib.compress(crudo, 9)).decode("ascii")

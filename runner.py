@@ -50,6 +50,7 @@ import requests
 BASE_DIR = Path(__file__).resolve().parent
 PYTHON = sys.executable
 RELOJ_SELFCHECK = BASE_DIR / "state" / "selfcheck_clock.json"
+GUARDAR = BASE_DIR / "tools" / "guardar.sh"
 
 REQUERIDAS = (
     "PAGE_ID_MAIN",
@@ -168,6 +169,36 @@ def correr(script):
     return True
 
 
+def guardar_estado():
+    """Sube al repositorio lo que se publicó, apenas termina el ciclo.
+
+    Antes el registro se guardaba una sola vez, al final del turno. Si el
+    turno se cortaba de golpe, se perdía la hora entera de registro y el
+    turno siguiente volvía a publicar lo mismo. Guardando cada ciclo, en el
+    peor caso se pierden un par de minutos.
+    """
+    if not (os.environ.get("GITHUB_ACTIONS") or "").strip():
+        return  # fuera de Actions no hay a dónde guardar
+    if not GUARDAR.exists():
+        return
+    try:
+        proc = subprocess.run(
+            ["bash", str(GUARDAR)],
+            cwd=str(BASE_DIR),
+            timeout=180,
+            capture_output=True,
+            text=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        log(f"No se pudo guardar el registro: {e}")
+        return
+    salida = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0:
+        log(f"El registro no se pudo guardar: {salida[-1] if salida else 'sin detalle'}")
+    elif salida and salida[-1] == "Estado guardado.":
+        log("Registro guardado.")
+
+
 def esperar(segundos):
     """Duerme en tramos cortos para poder cortar rápido si llega un SIGTERM."""
     fin = time.monotonic() + segundos
@@ -224,6 +255,9 @@ def main():
         if _parar:
             break
         ok_poll = correr("poll_and_publish.py")
+
+        # Se sube el registro ahora mismo, no al final del turno.
+        guardar_estado()
 
         if ok_tg and ok_poll:
             if fallos_seguidos and ya_avise_del_fallo:
