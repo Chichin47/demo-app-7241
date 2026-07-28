@@ -120,6 +120,16 @@ jobs:
           rm -f "$RUNNER_TEMP/cfg2.env"
           echo "Sobre extra cargado."
 
+      # Ajustes de ritmo que se llevan acá, a la vista, en vez de dentro de los
+      # sobres cifrados: así se cambian con un solo empuje al repositorio y sin
+      # tener que rehacer ningún secreto. Como se escriben DESPUÉS de los dos
+      # sobres, este valor es el que manda.
+      - name: Ritmo
+        run: |
+          # Separación mínima entre publicaciones automáticas, en minutos.
+          echo "MIN_MINUTES_BETWEEN_POSTS=10" >> "$GITHUB_ENV"
+          echo "Separación mínima entre publicaciones: 10 min."
+
       # Siempre se parte de la ÚLTIMA versión del estado que hay en el
       # repositorio, no de la del commit con el que arrancó este turno.
       # Motivo: las corridas programadas se crean con la foto del repositorio
