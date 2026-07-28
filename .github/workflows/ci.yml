@@ -86,8 +86,23 @@ jobs:
           rm -f "$RUNNER_TEMP/cfg2.env"
           echo "Sobre extra cargado."
 
+      # Siempre se parte de la ÚLTIMA versión del estado que hay en el
+      # repositorio, no de la del commit con el que arrancó este turno.
+      # Motivo: las corridas programadas se crean con la foto del repositorio
+      # del momento en que entran a la cola, y como el turno anterior dura casi
+      # una hora, esa foto ya está vieja cuando por fin arrancan. Si se
+      # restaurara de ahí, el turno no se enteraría de lo que publicó el turno
+      # anterior y lo volvería a publicar (posts duplicados).
       - name: Restore state
-        run: python tools/pack.py unpack
+        run: |
+          git fetch origin +refs/heads/main:refs/remotes/origin/main || true
+          if git show origin/main:data/store.b64 > "$RUNNER_TEMP/remote.b64" 2>/dev/null; then
+            cp "$RUNNER_TEMP/remote.b64" data/store.b64
+            echo "Estado tomado de la última versión del repositorio."
+          else
+            echo "No se pudo leer el estado remoto; se usa el del commit."
+          fi
+          python tools/pack.py unpack
 
       # Paso corto y aparte: su log se ve al instante, sin esperar al proceso
       # largo. Nunca corta el turno aunque falle.
@@ -103,17 +118,34 @@ jobs:
           QUIET_LIFECYCLE: "1"
         run: python runner.py
 
+      # Al guardar nunca se pisa lo que haya en el repositorio: se UNE. Lo
+      # publicado queda siendo la suma de las dos versiones, así ningún post
+      # se pierde de la lista y por lo tanto ninguno se repite. Si otro turno
+      # guardó primero, se vuelve a intentar sobre lo nuevo.
       - name: Save state
         if: always()
         run: |
           python tools/pack.py pack
+          cp data/store.b64 "$RUNNER_TEMP/local.b64"
+          cp tools/merge.py "$RUNNER_TEMP/merge.py"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/store.b64 || true
-          if git diff --cached --quiet; then
-            echo "Sin cambios."
-          else
+          for intento in 1 2 3 4 5; do
+            git fetch origin +refs/heads/main:refs/remotes/origin/main || true
+            git checkout -f -B guardado origin/main
+            git show origin/main:data/store.b64 > "$RUNNER_TEMP/remote.b64" 2>/dev/null || : > "$RUNNER_TEMP/remote.b64"
+            python "$RUNNER_TEMP/merge.py" "$RUNNER_TEMP/remote.b64" "$RUNNER_TEMP/local.b64" data/store.b64
+            git add -f data/store.b64
+            if git diff --cached --quiet; then
+              echo "Sin cambios."
+              exit 0
+            fi
             git commit -m "chore: update data [skip ci]"
-            git pull --rebase --autostash origin main || true
-            git push || true
-          fi
+            if git push origin HEAD:main; then
+              echo "Estado guardado."
+              exit 0
+            fi
+            echo "Otro turno guardó primero; reintento ($intento)."
+            sleep 5
+          done
+          echo "No se pudo guardar el estado." >&2

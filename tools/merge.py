@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Une dos copias del estado en una sola, sin perder nada.
+
+Motivo: un turno de Actions puede arrancar "clavado" en un commit viejo
+(las corridas programadas se crean con la foto del repositorio de ese
+momento y esperan en la cola). Si al guardar pisáramos el archivo remoto
+con el nuestro, se perdería lo que publicó el turno anterior y esos posts
+se volverían a publicar. Acá se juntan las dos versiones: lo publicado es
+la unión de ambas, así nada se repite.
+
+Uso:  python tools/merge.py remoto.b64 local.b64 salida.b64
+El remoto puede estar vacío o no existir.
+"""
+import base64
+import json
+import sys
+import zlib
+
+
+def leer(ruta):
+    try:
+        with open(ruta, "rb") as fh:
+            crudo = fh.read()
+    except OSError:
+        return {}
+    if not crudo.strip():
+        return {}
+    try:
+        datos = zlib.decompress(base64.b64decode(crudo)).decode("utf-8")
+        d = json.loads(datos)
+        return d if isinstance(d, dict) else {}
+    except Exception as e:  # noqa: BLE001
+        print(f"  (no se pudo leer {ruta}: {e})")
+        return {}
+
+
+def j(texto, por_defecto):
+    try:
+        v = json.loads(texto)
+    except Exception:  # noqa: BLE001
+        return por_defecto
+    return v if isinstance(v, type(por_defecto)) else por_defecto
+
+
+def volcar(obj):
+    return json.dumps(obj, ensure_ascii=False, indent=2)
+
+
+RANGO = {"scheduled": 0, "pending": 0, "publishing": 1, "done": 2}
+
+
+def unir_cola(remoto, local):
+    """Une las dos colas de Telegram por clave.
+
+    Gana el que esté más adelantado: si en una copia el envío ya salió
+    ('done'), esa manda, para no publicarlo dos veces.
+    """
+    salida = {}
+    for origen in (remoto, local):
+        for job in origen.get("jobs", []) or []:
+            k = job.get("key")
+            if not k:
+                continue
+            previo = salida.get(k)
+            if previo is None:
+                salida[k] = job
+                continue
+            if RANGO.get(job.get("status"), 0) >= RANGO.get(previo.get("status"), 0):
+                salida[k] = job
+    return {"jobs": list(salida.values())}
+
+
+def main():
+    if len(sys.argv) != 4:
+        print("uso: merge.py remoto.b64 local.b64 salida.b64", file=sys.stderr)
+        return 2
+    remoto, local, salida = sys.argv[1], sys.argv[2], sys.argv[3]
+
+    R = leer(remoto)
+    L = leer(local)
+    if not L:
+        print("Sin estado local; no hay nada que unir.")
+        return 1
+    if not R:
+        print("Sin estado remoto; se guarda el local tal cual.")
+        final = dict(L)
+    else:
+        final = dict(R)
+        final.update(L)  # por defecto manda lo local
+
+        # 1) Procesados: la unión de ambos. Nunca se olvida un post.
+        pr = set(j(R.get("processed_ids.json", "{}"), {}).get("processed", []) or [])
+        pl = set(j(L.get("processed_ids.json", "{}"), {}).get("processed", []) or [])
+        final["processed_ids.json"] = volcar({"processed": sorted(pr | pl)})
+
+        # 2) Publicados: también unión.
+        mr = j(R.get("published_map.json", "{}"), {})
+        ml = j(L.get("published_map.json", "{}"), {})
+        mr.update(ml)
+        final["published_map.json"] = volcar(mr)
+
+        # 3) Cola de Telegram.
+        final["telegram_queue.json"] = volcar(
+            unir_cola(j(R.get("telegram_queue.json", "{}"), {}),
+                      j(L.get("telegram_queue.json", "{}"), {}))
+        )
+
+        # 4) Relojes: el valor más reciente de cada uno.
+        def mayor(nombre, campo):
+            a = j(R.get(nombre, "{}"), {}).get(campo) or 0
+            b = j(L.get(nombre, "{}"), {}).get(campo) or 0
+            base = j(L.get(nombre, "{}"), {}) or j(R.get(nombre, "{}"), {})
+            if not isinstance(base, dict):
+                return
+            base[campo] = max(a, b)
+            final[nombre] = volcar(base)
+
+        mayor("telegram_offset.json", "offset")
+        mayor("publish_clock.json", "last_publish_ts")
+        mayor("selfcheck_clock.json", "proximo")
+
+        pu = len(j(final["processed_ids.json"], {}).get("processed", []))
+        print(f"Unido: {pu} post(s) procesados, {len(mr)} publicado(s).")
+
+    crudo = json.dumps(final, ensure_ascii=False).encode("utf-8")
+    b64 = base64.b64encode(zlib.compress(crudo, 9)).decode("ascii")
+    lineas = "\n".join(b64[i:i + 96] for i in range(0, len(b64), 96)) + "\n"
+    with open(salida, "w", encoding="utf-8") as fh:
+        fh.write(lineas)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
