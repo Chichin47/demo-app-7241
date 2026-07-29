@@ -30,9 +30,12 @@ Mensajes de cualquier otro chat se ignoran (solo se loguean) por seguridad:
 solo el chat configurado en TELEGRAM_CHAT_ID puede disparar publicaciones.
 """
 import os
+import sys
 import json
 import time
+import subprocess
 import tempfile
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -176,6 +179,181 @@ def download_telegram_photo(file_id, dest):
     r = requests.get(url, timeout=60)
     r.raise_for_status()
     dest.write_bytes(r.content)
+
+
+# --------------------------------------------------------------------------
+# Tablero de control: botones fijos del chat
+# --------------------------------------------------------------------------
+#
+# Debajo de la caja de texto del chat queda un teclado fijo con tres botones.
+# Son la forma de tener el bot controlado sin entrar a GitHub ni leer logs:
+#
+#   🔎 Revisar ahora  -> corre el autochequeo completo (tokens de las dos
+#                        páginas, posts pendientes, Claude, Telegram, ritmo)
+#                        y devuelve el reporte al chat.
+#   📊 Último post    -> qué fue lo último que publicó y hace cuánto.
+#   ❔ Ayuda          -> recordatorio de cómo se usa.
+#
+# También funcionan escritos como comando (/revisar, /ultimo, /ayuda) y el
+# teclado se vuelve a mandar solo si el usuario lo cerró.
+
+BTN_REVISAR = "🔎 Revisar ahora"
+BTN_ULTIMO = "📊 Último post"
+BTN_AYUDA = "❔ Ayuda"
+
+TECLADO_FIJO = {
+    "keyboard": [[{"text": BTN_REVISAR}], [{"text": BTN_ULTIMO}, {"text": BTN_AYUDA}]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+
+TEXTO_AYUDA = (
+    "🤖 Así se maneja el bot:\n\n"
+    "🔎 Revisar ahora — revisa todo de punta a punta (las dos páginas, los posts "
+    "pendientes, Claude, Telegram y el ritmo de publicación) y te manda el reporte "
+    "acá mismo. Tarda unos segundos. No publica nada.\n\n"
+    "📊 Último post — te dice qué fue lo último que publicó y hace cuánto.\n\n"
+    "📸 Para publicar algo a mano: mándame la foto con la descripción y te pregunto "
+    "a qué hora la publico.\n\n"
+    "El bot trabaja solo: barre la página 1 cada 3 minutos y publica de a uno, con "
+    "al menos {min:.0f} minutos entre publicaciones."
+)
+
+
+def normaliza(texto):
+    """Quita tildes, emojis y mayúsculas para reconocer el botón o el comando."""
+    txt = unicodedata.normalize("NFD", (texto or "").strip().lower())
+    txt = "".join(c for c in txt if unicodedata.category(c) != "Mn")
+    return "".join(c for c in txt if c.isalnum() or c.isspace()).strip()
+
+
+def que_comando(texto):
+    """Devuelve 'revisar', 'ultimo', 'ayuda' o None."""
+    t = normaliza(texto)
+    if not t:
+        return None
+    if t.startswith("revisar") or t in ("estado", "chequeo", "autochequeo", "check"):
+        return "revisar"
+    if t.startswith("ultimo") or t in ("ultima", "ultima publicacion"):
+        return "ultimo"
+    if t.startswith("ayuda") or t in ("help", "comandos", "start", "menu"):
+        return "ayuda"
+    return None
+
+
+def registrar_menu_comandos():
+    """Deja los comandos en el menú '/' de Telegram (se hace una sola vez)."""
+    try:
+        api("setMyCommands", commands=json.dumps([
+            {"command": "revisar", "description": "Revisar que todo esté bien"},
+            {"command": "ultimo", "description": "Qué publicó último y hace cuánto"},
+            {"command": "ayuda", "description": "Cómo se usa el bot"},
+        ]))
+    except Exception as e:
+        log(f"No se pudo registrar el menú de comandos: {e}")
+
+
+def hace_cuanto(segundos):
+    if segundos < 90:
+        return "hace menos de un minuto"
+    minutos = segundos / 60
+    if minutos < 90:
+        return f"hace {minutos:.0f} minutos"
+    horas = minutos / 60
+    if horas < 36:
+        return f"hace {horas:.1f} horas"
+    return f"hace {horas / 24:.1f} días"
+
+
+def cmd_revisar(chat_id):
+    """Corre el autochequeo completo. Él mismo manda el reporte al chat."""
+    reply(chat_id, "🔎 Revisando todo, dame unos segundos…", TECLADO_FIJO)
+    ruta = BASE_DIR / "selfcheck.py"
+    if not ruta.exists():
+        reply(chat_id, "❌ No encuentro el archivo de revisión (selfcheck.py).")
+        return
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(ruta)],
+            cwd=str(BASE_DIR),
+            timeout=300,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.TimeoutExpired:
+        reply(chat_id, "⚠️ La revisión se pasó de 5 minutos y la corté. Vuelve a intentar.")
+        return
+    except Exception as e:
+        reply(chat_id, f"❌ No se pudo correr la revisión: {e}")
+        return
+    if proc.returncode != 0:
+        cola = (proc.stderr or proc.stdout or "").strip().splitlines()
+        detalle = cola[-1] if cola else "sin detalle"
+        reply(chat_id, f"⚠️ La revisión terminó con error: {detalle[:300]}")
+    log("Autochequeo pedido desde el chat: terminado.")
+
+
+def cmd_ultimo(chat_id):
+    """Muestra la última publicación registrada."""
+    try:
+        datos = {}
+        if bot.PUBLISHED_MAP_PATH.exists():
+            datos = json.loads(bot.PUBLISHED_MAP_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        reply(chat_id, f"❌ No pude leer el registro de publicaciones: {e}", TECLADO_FIJO)
+        return
+    if not datos:
+        reply(chat_id, "Todavía no hay ninguna publicación registrada.", TECLADO_FIJO)
+        return
+
+    post_id, info = list(datos.items())[-1]
+    partes = [f"📊 Última publicación\n\nID: {post_id}"]
+    cuando = info.get("when")
+    if cuando:
+        partes.append(f"Publicada el {fmt_local(float(cuando))} ({hace_cuanto(time.time() - float(cuando))}).")
+    caption = (info.get("caption") or "").strip()
+    if caption:
+        partes.append(f"\nDescripción usada:\n{caption[:900]}")
+    partes.append(f"\nhttps://www.facebook.com/{post_id}")
+
+    mins = bot.minutes_since_last_publish()
+    if mins is not None:
+        falta = bot.MIN_MINUTES_BETWEEN_POSTS - mins
+        partes.append(
+            f"\nRitmo: última salida hace {mins:.0f} min. "
+            + ("Ya puede publicar la siguiente." if falta <= 0 else f"La siguiente puede salir en {falta:.0f} min.")
+        )
+    reply(chat_id, "\n".join(partes), TECLADO_FIJO)
+
+
+def cmd_ayuda(chat_id):
+    registrar_menu_comandos()
+    reply(chat_id, TEXTO_AYUDA.format(min=bot.MIN_MINUTES_BETWEEN_POSTS), TECLADO_FIJO)
+
+
+def atender_comandos(mensajes):
+    """Saca los mensajes que son comandos y los atiende. Devuelve el resto."""
+    restantes = []
+    for msg in mensajes:
+        texto = (msg.get("text") or "").strip()
+        # Solo texto suelto puede ser comando: una foto con caption nunca lo es.
+        cmd = que_comando(texto) if texto and not msg.get("photo") else None
+        if not cmd:
+            restantes.append(msg)
+            continue
+        chat_id = str(msg.get("chat", {}).get("id", ""))
+        log(f"Comando recibido: {cmd}")
+        try:
+            if cmd == "revisar":
+                cmd_revisar(chat_id)
+            elif cmd == "ultimo":
+                cmd_ultimo(chat_id)
+            else:
+                cmd_ayuda(chat_id)
+        except Exception as e:
+            log(f"ERROR atendiendo el comando {cmd}: {e}")
+            reply(chat_id, f"❌ Algo falló atendiendo «{texto}»: {e}")
+    return restantes
 
 
 # --------------------------------------------------------------------------
@@ -533,7 +711,12 @@ def main():
         except Exception as e:
             log(f"ERROR procesando botón: {e}")
 
-    # 2. Fotos nuevas: se encolan y se pregunta cuándo publicarlas.
+    # 2. Comandos del tablero (🔎 Revisar ahora, 📊 Último post, ❔ Ayuda).
+    #    Se atienden antes de armar publicaciones para que un comando nunca se
+    #    confunda con la descripción de una foto.
+    nuevos_mensajes = atender_comandos(nuevos_mensajes)
+
+    # 3. Fotos nuevas: se encolan y se pregunta cuándo publicarlas.
     grupos, textos_sueltos = collect_jobs(nuevos_mensajes)
     for g in grupos:
         if not g["caption"]:
@@ -567,7 +750,7 @@ def main():
             "descripción (o la foto justo después del texto) y la publico.",
         )
 
-    # 3. Publicar lo que ya venció.
+    # 4. Publicar lo que ya venció.
     with tempfile.TemporaryDirectory() as tmp:
         publicar_pendientes(jobs, Path(tmp))
 

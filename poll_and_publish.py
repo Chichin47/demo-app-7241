@@ -480,6 +480,8 @@ def record_published(backup_post_id, source_post_id, source_text, caption):
             "source_text": source_text,
             "caption": caption,
             "ts": os.environ.get("GITHUB_RUN_ID", ""),
+            # Hora real de publicación, para poder decir "hace cuánto" en el chat.
+            "when": time.time(),
         }
         # conserva solo los últimos 200
         if len(data) > 200:
