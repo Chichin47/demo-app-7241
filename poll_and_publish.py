@@ -235,10 +235,27 @@ Tu trabajo, dado el texto original de un post (título + diálogo) y la cantidad
    de tachado sobre la palabra en la imagen, pero se sigue leyendo). Ejemplos: racismo→~r4c1smo~, \
    discriminación→~d1scr1m1nac10n~, idiota→~1d10t4~, puta→~put4~, maricón→~m4r1c0n~. NO censures \
    palabras neutras.
-4. Redacta una descripción alterna para el post (2-4 oraciones, tono enganchador, con 1-2 hashtags \
-   relevantes) que cuente lo mismo con palabras DISTINTAS al post original, para evitar que Facebook \
-   lo marque como contenido duplicado. Aplica la misma censura tipo "maquillaje" a términos fuertes \
-   dentro de esta descripción también (aquí sin virgulillas, solo el reemplazo con números).
+4. Redacta la descripción alterna del post con esta estructura, en este orden:
+
+   a) PREÁMBULO: 1-3 oraciones que cuenten la situación con palabras DISTINTAS al post original \
+      (tono enganchador), para que Facebook no lo marque como contenido duplicado.
+
+   b) DIÁLOGO: si el texto original trae diálogo (líneas tipo "Nombre: frase", o con guiones, o \
+      cualquier intervención hablada de un personaje), va SIEMPRE debajo del preámbulo, porque el \
+      diálogo es el contexto y sin él la gente no entiende la publicación. Reglas del diálogo:
+      - Una línea por intervención, empezando con guion y el nombre: "- Aldo: lo que dijo".
+      - Respeta el orden y el sentido de cada intervención. Puedes arreglar ortografía, tildes y \
+        puntuación, pero NO cambies lo que dice el personaje, NO lo resumas hasta que pierda la \
+        gracia y NO inventes intervenciones que no estén en el original.
+      - Separa cada línea con un salto de línea real.
+      - Máximo 6 intervenciones: si el original trae más, quédate con las que sostienen el chiste \
+        o el conflicto y descarta el relleno.
+      - Si el original NO trae diálogo, sáltate esta parte: solo preámbulo y hashtags.
+
+   c) CIERRE: 1-2 hashtags relevantes en la última línea.
+
+   Aplica la misma censura tipo "maquillaje" a términos fuertes en TODA la descripción, preámbulo \
+   y diálogo incluidos (aquí sin virgulillas, solo el reemplazo con números).
 5. Si el post no tiene contenido de diálogo aprovechable (por ejemplo solo es un anuncio, o el texto \
    está vacío), responde skip=true con skip_reason.
 
@@ -264,7 +281,15 @@ SUBMIT_TOOL = {
                     "required": ["image_index", "text", "color"],
                 },
             },
-            "caption": {"type": "string"},
+            "caption": {
+                "type": "string",
+                "description": (
+                    "Descripción alterna completa: preámbulo reescrito, luego el diálogo "
+                    "del original (una línea por intervención, con guion y nombre, "
+                    "separadas por saltos de línea reales) si lo hubiera, y al final "
+                    "los hashtags."
+                ),
+            },
         },
         "required": ["skip"],
     },
@@ -280,7 +305,8 @@ MANUAL_OVERRIDE = (
     "- elegir 1-2 frases cortas y llamativas para poner sobre la(s) foto(s); si no hay "
     "diálogo, resume la idea principal en una frase gancho de máximo ~70 caracteres;\n"
     "- aplicar la censura tipo maquillaje donde corresponda;\n"
-    "- redactar la descripción alterna con hashtags.\n"
+    "- redactar la descripción alterna con la estructura de la regla 4: preámbulo "
+    "reescrito, luego el diálogo si el texto trae diálogo, y los hashtags al final.\n"
     "Siempre devuelve skip=false con lines y caption completos."
 )
 
