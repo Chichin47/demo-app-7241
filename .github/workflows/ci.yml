@@ -60,16 +60,6 @@ jobs:
             echo "Relevo encolado: el siguiente turno ya está esperando."
           else
             echo "No se pudo encolar el relevo (código $codigo)."
-            # Pista para saber QUÉ se pegó, sin revelar la llave: solo el
-            # tamaño y de qué familia es el comienzo.
-            largo=${#RELAY_TOKEN}
-            case "$RELAY_TOKEN" in
-              github_pat_*) familia="llave de GitHub (fina)";;
-              ghp_*)        familia="llave de GitHub (clásica)";;
-              EAA*)         familia="OJO: es una llave de Facebook";;
-              *)            familia="desconocida";;
-            esac
-            echo "Pista: largo=$largo, familia=$familia"
           fi
 
       - uses: actions/setup-python@v5
