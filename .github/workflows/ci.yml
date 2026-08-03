@@ -183,6 +183,11 @@ jobs:
           # llega el 🔴 de cierre y en un par de minutos no llega el 🟢 del
           # relevo, es que el relevo no arrancó.
           QUIET_LIFECYCLE: "0"
+          # La misma llave del relevo, ahora también adentro del proceso: la
+          # usa el botón 🔄 Reiniciar del chat para pedirle a GitHub un turno
+          # nuevo antes de cerrar este. Si falta, el reinicio igual funciona
+          # (se cierra el turno y entra el relevo ya encolado).
+          RELAY_TOKEN: ${{ secrets.RELAY_TOKEN }}
         run: python runner.py
 
       # Guardado final del turno. El runner ya va guardando en cada ciclo;

@@ -42,6 +42,7 @@ from pathlib import Path
 import requests
 
 import poll_and_publish as bot
+import cola
 
 BASE_DIR = Path(__file__).resolve().parent
 OFFSET_PATH = BASE_DIR / "state" / "telegram_offset.json"
@@ -49,6 +50,12 @@ QUEUE_PATH = BASE_DIR / "state" / "telegram_queue.json"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+# Para el botón de reinicio: la misma llave que usa el turno para encolar su
+# relevo. Si no está, el reinicio igual funciona (se cierra el turno y entra el
+# relevo que ya quedó esperando en la puerta), solo que sin red de seguridad.
+RELAY_TOKEN = os.environ.get("RELAY_TOKEN", "").strip()
+GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "").strip()
 
 # Zona horaria para mostrar y agendar horas. GitHub Actions corre en UTC, así
 # que todo lo que el usuario ve (botones de día/hora y confirmaciones) se
@@ -165,6 +172,48 @@ def edit_message(chat_id, message_id, text, reply_markup=None):
         log(f"No se pudo editar el mensaje {message_id}: {e}")
 
 
+def send_photo_url(chat_id, url, caption, reply_markup=None):
+    """Manda una foto pasándole a Telegram la dirección de la imagen.
+
+    La miniatura del panel es la foto ORIGINAL de la página 1, tal cual: no se
+    descarga acá ni se compone nada. Telegram la trae solo. Si la dirección ya
+    venció (las de Facebook caducan a las horas), se devuelve None y el que
+    llama manda el texto sin foto.
+    """
+    try:
+        kwargs = {"chat_id": chat_id, "photo": url, "caption": caption[:1024]}
+        if reply_markup:
+            kwargs["reply_markup"] = reply_markup
+        return api("sendPhoto", **kwargs)
+    except Exception as e:
+        log(f"No se pudo mandar la miniatura ({e}); va sin foto.")
+        return None
+
+
+def editar_ficha(chat_id, message_id, texto, reply_markup=None):
+    """Actualiza una ficha del panel, sea foto (caption) o texto suelto."""
+    markup = reply_markup or {"inline_keyboard": []}
+    try:
+        api("editMessageCaption", chat_id=chat_id, message_id=message_id,
+            caption=texto[:1024], reply_markup=markup)
+        return
+    except Exception:
+        pass
+    try:
+        api("editMessageText", chat_id=chat_id, message_id=message_id,
+            text=texto[:4096], reply_markup=markup)
+    except Exception as e:
+        log(f"No se pudo actualizar la ficha {message_id}: {e}")
+
+
+def borrar_mensaje(chat_id, message_id):
+    try:
+        api("deleteMessage", chat_id=chat_id, message_id=message_id)
+        return True
+    except Exception:
+        return False  # ya borrado, o pasó de 48 h: no es un problema
+
+
 def answer_callback(callback_id, text=""):
     try:
         api("answerCallbackQuery", callback_query_id=callback_id, text=text[:180])
@@ -188,35 +237,53 @@ def download_telegram_photo(file_id, dest):
 # Debajo de la caja de texto del chat queda un teclado fijo con tres botones.
 # Son la forma de tener el bot controlado sin entrar a GitHub ni leer logs:
 #
+#   🗂 Cola           -> el panel: qué está por publicarse, con miniatura y
+#                        botones por post (publicar ahora / pausar / eliminar).
 #   🔎 Revisar ahora  -> corre el autochequeo completo (tokens de las dos
 #                        páginas, posts pendientes, Claude, Telegram, ritmo)
 #                        y devuelve el reporte al chat.
 #   📊 Último post    -> qué fue lo último que publicó y hace cuánto.
 #   ❔ Ayuda          -> recordatorio de cómo se usa.
+#   🔄 Reiniciar      -> cierra el turno actual y arranca uno nuevo y limpio.
 #
-# También funcionan escritos como comando (/revisar, /ultimo, /ayuda) y el
-# teclado se vuelve a mandar solo si el usuario lo cerró.
+# También funcionan escritos como comando (/cola, /revisar, /ultimo, /ayuda,
+# /reiniciar) y el teclado se vuelve a mandar solo si el usuario lo cerró.
 
+BTN_COLA = "🗂 Cola"
 BTN_REVISAR = "🔎 Revisar ahora"
 BTN_ULTIMO = "📊 Último post"
 BTN_AYUDA = "❔ Ayuda"
+BTN_REINICIAR = "🔄 Reiniciar"
 
 TECLADO_FIJO = {
-    "keyboard": [[{"text": BTN_REVISAR}], [{"text": BTN_ULTIMO}, {"text": BTN_AYUDA}]],
+    "keyboard": [
+        [{"text": BTN_COLA}, {"text": BTN_REVISAR}],
+        [{"text": BTN_ULTIMO}, {"text": BTN_AYUDA}],
+        [{"text": BTN_REINICIAR}],
+    ],
     "resize_keyboard": True,
     "is_persistent": True,
 }
 
 TEXTO_AYUDA = (
     "🤖 Así se maneja el bot:\n\n"
+    "🗂 Cola — te muestro todo lo que está esperando para publicarse, con su "
+    "miniatura para que lo reconozcas de un vistazo. Cada uno trae sus botones:\n"
+    "   🚀 Publicar ahora — se salta la fila y sale en el próximo barrido.\n"
+    "   ⏸ Pausar — se queda congelado sin salir, y los demás siguen normal.\n"
+    "   🗑 Eliminar — no se publica nunca (el post sigue intacto en la página 1).\n"
+    "Si no tocas nada, todo sigue saliendo solo con su ritmo de siempre.\n\n"
     "🔎 Revisar ahora — revisa todo de punta a punta (las dos páginas, los posts "
     "pendientes, Claude, Telegram y el ritmo de publicación) y te manda el reporte "
     "acá mismo. Tarda unos segundos. No publica nada.\n\n"
     "📊 Último post — te dice qué fue lo último que publicó y hace cuánto.\n\n"
+    "🔄 Reiniciar — si algo se colgó, cierra el turno actual y arranca uno limpio. "
+    "Te pregunta antes, para que no pase por accidente.\n\n"
     "📸 Para publicar algo a mano: mándame la foto con la descripción y te pregunto "
     "a qué hora la publico.\n\n"
     "El bot trabaja solo: barre la página 1 cada 3 minutos y publica de a uno, con "
-    "al menos {min:.0f} minutos entre publicaciones."
+    "al menos {min:.0f} minutos entre publicaciones. Por eso el panel puede estar "
+    "hasta 3 minutos atrasado: con 🔄 Actualizar lo refrescas."
 )
 
 
@@ -228,10 +295,16 @@ def normaliza(texto):
 
 
 def que_comando(texto):
-    """Devuelve 'revisar', 'ultimo', 'ayuda' o None."""
+    """Devuelve 'cola', 'revisar', 'ultimo', 'ayuda', 'reiniciar' o None."""
     t = normaliza(texto)
     if not t:
         return None
+    # Coincidencia exacta para las palabras cortas: así «cola» abre el panel
+    # pero «colaboración» en un texto suelto no dispara nada.
+    if t in ("cola", "panel", "pendientes", "en espera", "espera"):
+        return "cola"
+    if t in ("reiniciar", "reinicio", "restart", "reset", "reiniciar bot"):
+        return "reiniciar"
     if t.startswith("revisar") or t in ("estado", "chequeo", "autochequeo", "check"):
         return "revisar"
     if t.startswith("ultimo") or t in ("ultima", "ultima publicacion"):
@@ -245,8 +318,10 @@ def registrar_menu_comandos():
     """Deja los comandos en el menú '/' de Telegram (se hace una sola vez)."""
     try:
         api("setMyCommands", commands=json.dumps([
+            {"command": "cola", "description": "Ver lo que está por publicarse"},
             {"command": "revisar", "description": "Revisar que todo esté bien"},
             {"command": "ultimo", "description": "Qué publicó último y hace cuánto"},
+            {"command": "reiniciar", "description": "Cerrar el turno y arrancar uno limpio"},
             {"command": "ayuda", "description": "Cómo se usa el bot"},
         ]))
     except Exception as e:
@@ -331,8 +406,277 @@ def cmd_ayuda(chat_id):
     reply(chat_id, TEXTO_AYUDA.format(min=bot.MIN_MINUTES_BETWEEN_POSTS), TECLADO_FIJO)
 
 
+# --------------------------------------------------------------------------
+# 🗂 Panel de cola
+# --------------------------------------------------------------------------
+#
+# El panel dibuja una ficha por cada post que espera turno en la página 1:
+# miniatura (la foto original, sin editar), cuándo se publicó allá, el texto
+# original y en qué punto de la fila está. Debajo de cada ficha van sus
+# botones.
+#
+# Nada de esto llama a Claude. La lista sale de state/cola_snapshot.json, que
+# el bot escribe en cada barrido con lo que ya trajo de Facebook, y la
+# miniatura la trae Telegram sola desde la dirección de la foto. Mirar la cola
+# cuesta cero.
+
+# Cuántas fichas se dibujan como máximo. Más que esto llena el chat y no
+# aporta: a diez minutos por post, son casi dos horas de trabajo por delante.
+PANEL_MAX_FICHAS = 8
+
+ETIQUETA_DESCARTE = {
+    "video": "🎬 Es un video — el bot no publica videos, así que este se salta solo.",
+    "sin_foto": "🚫 No tiene foto — el bot solo republica posts con foto.",
+    "sin_texto": "🚫 No tiene texto — sin texto no hay frase que resaltar.",
+}
+
+
+def hora_post(created_time):
+    """Convierte la fecha que da Facebook a algo legible en hora local."""
+    try:
+        dt = datetime.strptime(created_time, "%Y-%m-%dT%H:%M:%S%z")
+    except Exception:
+        return (created_time or "")[:16].replace("T", " ") or "sin fecha"
+    loc = dt.astimezone(LOCAL_TZ)
+    hoy = now_local().date()
+    if loc.date() == hoy:
+        return f"hoy {loc.strftime('%H:%M')}"
+    if loc.date() == hoy - timedelta(days=1):
+        return f"ayer {loc.strftime('%H:%M')}"
+    return loc.strftime("%d/%m %H:%M")
+
+
+def espera_estimada(posicion):
+    """Cuántos minutos faltan para que salga el que está en esa posición.
+
+    posicion 0 es el primero de la fila. El primero espera lo que le falte al
+    espaciado mínimo desde la última publicación; cada uno de atrás suma otro
+    espaciado completo.
+    """
+    minimo = bot.MIN_MINUTES_BETWEEN_POSTS
+    desde = bot.minutes_since_last_publish()
+    falta_el_primero = 0.0 if desde is None else max(0.0, minimo - desde)
+    return falta_el_primero + posicion * minimo
+
+
+def texto_espera(minutos):
+    if minutos < 1:
+        return "sale en el próximo barrido"
+    if minutos < 60:
+        return f"sale en ~{minutos:.0f} min"
+    return f"sale en ~{minutos / 60:.1f} h"
+
+
+def ficha_item(item, n, estado, posicion):
+    """Arma el texto de una ficha del panel."""
+    cabecera = f"{n}. 🕒 publicado en la página 1 {hora_post(item.get('created_time'))}"
+    fotos = item.get("n_fotos") or 0
+    if fotos > 1:
+        cabecera += f" · {fotos} fotos"
+
+    if estado == "prioridad":
+        linea = "🚀 LO PEDISTE PRIMERO — sale en el próximo barrido, saltándose la espera."
+    elif estado == "pausado":
+        linea = "⏸ EN PAUSA — no va a salir hasta que le des ▶️ Reanudar. Los demás siguen normal."
+    elif estado in ETIQUETA_DESCARTE:
+        linea = ETIQUETA_DESCARTE[estado]
+    else:
+        linea = f"🕐 En espera, puesto {posicion + 1} de la fila — {texto_espera(espera_estimada(posicion))}."
+
+    texto = cola.item_a_texto(item, 500)
+    cuerpo = f"\n\n«{texto}»" if texto else "\n\n(sin texto)"
+    return f"{cabecera}\n{linea}{cuerpo}"
+
+
+def botones_item(item, estado):
+    clave = item.get("clave", "")
+    publicable = estado in ("espera", "pausado", "prioridad")
+    filas = []
+    if publicable:
+        fila = []
+        if estado != "prioridad":
+            fila.append({"text": "🚀 Publicar ahora", "callback_data": f"k|pub|{clave}"})
+        if estado == "pausado":
+            fila.append({"text": "▶️ Reanudar", "callback_data": f"k|rea|{clave}"})
+        else:
+            fila.append({"text": "⏸ Pausar", "callback_data": f"k|pau|{clave}"})
+        filas.append(fila)
+    filas.append([{"text": "🗑 Eliminar de la cola", "callback_data": f"k|del|{clave}"}])
+    return {"inline_keyboard": filas}
+
+
+def borrar_panel_anterior():
+    """Limpia el panel dibujado la vez pasada, para no apilar paneles viejos."""
+    panel = cola.leer_panel()
+    chat = panel.get("chat_id")
+    mensajes = panel.get("mensajes") or []
+    if not chat or not mensajes:
+        return
+    borrados = sum(1 for mid in mensajes if borrar_mensaje(chat, mid))
+    log(f"Panel anterior: {borrados}/{len(mensajes)} mensajes borrados.")
+
+
+def teclado_actualizar():
+    return {"inline_keyboard": [[{"text": "🔄 Actualizar", "callback_data": "k|ref|-"}]]}
+
+
+def cmd_cola(chat_id):
+    """Dibuja el panel de la cola: una ficha con botones por cada pendiente."""
+    snap = cola.leer_snapshot()
+    edad = cola.edad_snapshot(snap)
+    ctrl = cola.leer_control()
+    pausados = set(ctrl.get("pausados") or [])
+    prioridad = set(ctrl.get("prioridad") or [])
+    eliminados = set(ctrl.get("eliminados") or [])
+
+    borrar_panel_anterior()
+
+    if edad is None:
+        reply(chat_id,
+              "🗂 Todavía no tengo la lista armada.\n\n"
+              "El bot la escribe en su próximo barrido; en 3 minutos como mucho "
+              "vuelve a tocar 🗂 Cola y ya la tendrás.",
+              TECLADO_FIJO)
+        return
+
+    items = [i for i in (snap.get("items") or []) if i.get("id") not in eliminados]
+
+    def estado_de(item):
+        if item.get("estado") != "listo":
+            return item.get("estado", "sin_foto")
+        if item.get("id") in prioridad:
+            return "prioridad"
+        if item.get("id") in pausados:
+            return "pausado"
+        return "espera"
+
+    # Orden: primero lo que pediste que saliera ya, después por antigüedad.
+    # Es el mismo orden en el que el bot los va a publicar.
+    items.sort(key=lambda i: (0 if i.get("id") in prioridad else 1,
+                              i.get("created_time", "")))
+
+    estados = [estado_de(i) for i in items]
+    en_fila = [e for e in estados if e in ("espera", "prioridad")]
+    n_pausa = estados.count("pausado")
+    n_descarte = len(estados) - len(en_fila) - n_pausa
+
+    aviso_viejo = ""
+    if edad > cola.FRESCA_MINUTOS * 60:
+        aviso_viejo = (f"\n\n⚠️ Ojo: esta lista es de {hace_cuanto(edad)}. Si sigue "
+                       "igual dentro de un rato, el bot puede estar caído: usa 🔎 Revisar ahora.")
+
+    if not items:
+        reply(chat_id,
+              f"🗂 COLA — no hay nada esperando.\n\n"
+              f"Todo lo de la página 1 ya está publicado o descartado. "
+              f"En cuanto subas algo nuevo allá, aparece acá."
+              + aviso_viejo,
+              TECLADO_FIJO)
+        reply(chat_id, "Lista al día de " + hace_cuanto(edad) + ".", teclado_actualizar())
+        return
+
+    partes = [f"🗂 COLA — {len(en_fila)} esperando turno"]
+    if n_pausa:
+        partes.append(f"{n_pausa} en pausa")
+    if n_descarte:
+        partes.append(f"{n_descarte} que el bot va a saltarse")
+    cabecera = " · ".join(partes)
+
+    desde = bot.minutes_since_last_publish()
+    if en_fila:
+        cabecera += (f"\n\nSalen de a uno cada {bot.MIN_MINUTES_BETWEEN_POSTS:.0f} min. "
+                     f"El próximo {texto_espera(espera_estimada(0))}.")
+    if desde is not None:
+        cabecera += f"\nÚltima publicación {hace_cuanto(desde * 60)}."
+    cabecera += ("\n\nSi no tocas nada, todo sigue saliendo solo en este orden."
+                 + aviso_viejo)
+
+    ids = []
+    res = reply(chat_id, cabecera, TECLADO_FIJO)
+    if res.get("result", {}).get("message_id"):
+        ids.append(res["result"]["message_id"])
+
+    posicion = 0
+    for n, (item, estado) in enumerate(zip(items, estados), start=1):
+        if n > PANEL_MAX_FICHAS:
+            break
+        texto = ficha_item(item, n, estado, posicion)
+        if estado in ("espera", "prioridad"):
+            posicion += 1
+        markup = botones_item(item, estado)
+        res = send_photo_url(chat_id, item.get("foto") or "", texto, markup) \
+            if item.get("foto") else None
+        if not res:
+            res = reply(chat_id, texto, markup)
+        mid = res.get("result", {}).get("message_id")
+        if mid:
+            ids.append(mid)
+
+    pie = f"Lista al día de {hace_cuanto(edad)}."
+    if len(items) > PANEL_MAX_FICHAS:
+        pie = (f"Muestro los primeros {PANEL_MAX_FICHAS}; hay "
+               f"{len(items) - PANEL_MAX_FICHAS} más atrás en la fila.\n" + pie)
+    res = reply(chat_id, pie, teclado_actualizar())
+    if res.get("result", {}).get("message_id"):
+        ids.append(res["result"]["message_id"])
+
+    cola.guardar_panel(chat_id, ids)
+    log(f"Panel dibujado: {len(items)} pendiente(s), {len(ids)} mensaje(s).")
+
+
+# --------------------------------------------------------------------------
+# 🔄 Reinicio
+# --------------------------------------------------------------------------
+
+def cmd_reiniciar(chat_id):
+    reply(chat_id,
+          "🔄 ¿Reinicio el bot?\n\n"
+          "Cierro el turno que está corriendo ahora y arranca uno nuevo y limpio.\n\n"
+          "No se pierde nada: lo ya publicado queda registrado, la cola sigue igual "
+          "y lo que tengas agendado a mano respeta su hora.\n\n"
+          "Tarda 1 o 2 minutos en volver; te llega el aviso 🟢 cuando ya esté arriba.",
+          {"inline_keyboard": [[
+              {"text": "✅ Sí, reiniciar", "callback_data": "rst|si"},
+              {"text": "❌ No, dejalo así", "callback_data": "rst|no"},
+          ]]})
+
+
+def pedir_turno_nuevo():
+    """Le pide a GitHub un turno nuevo. Devuelve qué contarle al usuario."""
+    if not RELAY_TOKEN or not GITHUB_REPO:
+        return "Cierro este turno y entra el relevo que ya estaba esperando."
+    try:
+        r = requests.post(
+            f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/ci.yml/dispatches",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {RELAY_TOKEN}",
+            },
+            json={"ref": "main"},
+            timeout=30,
+        )
+    except Exception as e:
+        log(f"No se pudo pedir turno nuevo: {e}")
+        return ("No pude avisarle a GitHub, pero igual cierro este turno y entra "
+                "el relevo que ya estaba esperando.")
+    if r.status_code == 204:
+        return "Turno nuevo pedido a GitHub y este se cierra en seguida."
+    log(f"Dispatch de reinicio devolvió {r.status_code}.")
+    return (f"GitHub respondió {r.status_code} al pedido de turno nuevo, pero igual "
+            "cierro este turno y entra el relevo que ya estaba esperando.")
+
+
+# --------------------------------------------------------------------------
+
 def atender_comandos(mensajes):
     """Saca los mensajes que son comandos y los atiende. Devuelve el resto."""
+    acciones = {
+        "cola": cmd_cola,
+        "revisar": cmd_revisar,
+        "ultimo": cmd_ultimo,
+        "reiniciar": cmd_reiniciar,
+        "ayuda": cmd_ayuda,
+    }
     restantes = []
     for msg in mensajes:
         texto = (msg.get("text") or "").strip()
@@ -344,12 +688,7 @@ def atender_comandos(mensajes):
         chat_id = str(msg.get("chat", {}).get("id", ""))
         log(f"Comando recibido: {cmd}")
         try:
-            if cmd == "revisar":
-                cmd_revisar(chat_id)
-            elif cmd == "ultimo":
-                cmd_ultimo(chat_id)
-            else:
-                cmd_ayuda(chat_id)
+            acciones.get(cmd, cmd_ayuda)(chat_id)
         except Exception as e:
             log(f"ERROR atendiendo el comando {cmd}: {e}")
             reply(chat_id, f"❌ Algo falló atendiendo «{texto}»: {e}")
@@ -571,12 +910,109 @@ def publicar_pendientes(jobs, tmpdir):
 # Callbacks de los botones
 # --------------------------------------------------------------------------
 
+def handle_panel_callback(cb, partes):
+    """Botones del panel de cola: publicar ahora, pausar, reanudar, eliminar."""
+    chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
+    message_id = cb.get("message", {}).get("message_id")
+    accion = partes[1] if len(partes) > 1 else ""
+    clave = partes[2] if len(partes) > 2 else ""
+
+    if accion == "ref":
+        answer_callback(cb["id"], "Actualizando…")
+        cmd_cola(chat_id)
+        return
+
+    snap = cola.leer_snapshot()
+    item = next((i for i in (snap.get("items") or []) if i.get("clave") == clave), None)
+    if not item:
+        answer_callback(cb["id"], "Ese post ya no está en la cola; actualiza el panel.")
+        return
+    pid = item["id"]
+    n = next((k for k, i in enumerate(snap.get("items") or [], start=1)
+              if i.get("clave") == clave), 1)
+
+    if accion == "pub":
+        cola.marcar(pid, "prioridad", True)
+        answer_callback(cb["id"], "Listo: sale primero, en el próximo barrido.")
+        editar_ficha(chat_id, message_id, ficha_item(item, n, "prioridad", 0),
+                     botones_item(item, "prioridad"))
+        log(f"Panel: {pid} marcado para salir primero.")
+        return
+
+    if accion == "pau":
+        cola.marcar(pid, "pausados", True)
+        answer_callback(cb["id"], "Pausado. Los demás siguen normal.")
+        editar_ficha(chat_id, message_id, ficha_item(item, n, "pausado", 0),
+                     botones_item(item, "pausado"))
+        log(f"Panel: {pid} pausado.")
+        return
+
+    if accion == "rea":
+        cola.marcar(pid, "pausados", False)
+        answer_callback(cb["id"], "Reanudado: vuelve a la fila.")
+        editar_ficha(chat_id, message_id, ficha_item(item, n, "espera", 0),
+                     botones_item(item, "espera"))
+        log(f"Panel: {pid} reanudado.")
+        return
+
+    if accion == "del":
+        cola.marcar(pid, "eliminados", True)
+        cola.marcar(pid, "pausados", False)
+        cola.marcar(pid, "prioridad", False)
+        answer_callback(cb["id"], "Eliminado de la cola.")
+        editar_ficha(
+            chat_id, message_id,
+            f"🗑 ELIMINADO de la cola — este post no se va a publicar.\n\n"
+            f"En la página 1 sigue intacto; lo único que pasa es que el bot ya no "
+            f"lo va a republicar.\n\n«{cola.item_a_texto(item, 300)}»",
+            {"inline_keyboard": [[{"text": "↩️ Deshacer", "callback_data": f"k|und|{clave}"}]]},
+        )
+        log(f"Panel: {pid} eliminado de la cola.")
+        return
+
+    if accion == "und":
+        cola.marcar(pid, "eliminados", False)
+        answer_callback(cb["id"], "Deshecho: vuelve a la cola.")
+        editar_ficha(chat_id, message_id, ficha_item(item, n, "espera", 0),
+                     botones_item(item, "espera"))
+        log(f"Panel: {pid} devuelto a la cola.")
+        return
+
+    answer_callback(cb["id"], "Botón no reconocido.")
+
+
+def handle_reinicio_callback(cb, partes):
+    chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
+    message_id = cb.get("message", {}).get("message_id")
+    if (partes[1] if len(partes) > 1 else "") != "si":
+        answer_callback(cb["id"], "Cancelado.")
+        edit_message(chat_id, message_id, "Listo, no reinicié nada. Todo sigue igual.")
+        return
+    answer_callback(cb["id"], "Reiniciando…")
+    detalle = pedir_turno_nuevo()
+    cola.pedir_reinicio("telegram")
+    edit_message(chat_id, message_id,
+                 "🔄 Reiniciando.\n\n" + detalle +
+                 "\n\nEn 1 o 2 minutos te llega el aviso 🟢 de que ya arrancó.")
+    log("Reinicio pedido desde el chat.")
+
+
 def handle_callback(cb, jobs):
     data = cb.get("data") or ""
     chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
     message_id = cb.get("message", {}).get("message_id")
     partes = data.split("|")
     accion = partes[0]
+
+    # Los botones del panel de cola y del reinicio se atienden aparte: no
+    # tienen nada que ver con la cola de envíos manuales de más abajo.
+    if accion == "k":
+        handle_panel_callback(cb, partes)
+        return
+    if accion == "rst":
+        handle_reinicio_callback(cb, partes)
+        return
+
     key = partes[1] if len(partes) > 1 else ""
     job = find_job(jobs, key)
 

@@ -27,6 +27,8 @@ from pathlib import Path
 
 import requests
 
+import cola
+
 BASE_DIR = Path(__file__).resolve().parent
 STATE_PATH = BASE_DIR / "state" / "processed_ids.json"
 PUBLISHED_MAP_PATH = BASE_DIR / "state" / "published_map.json"
@@ -209,6 +211,34 @@ def classify_attachment(post):
     if not images:
         return "other", None
     return "photo", images[:3]
+
+
+def resumen_para_cola(post):
+    """Convierte un post pendiente en la ficha corta que muestra el panel.
+
+    No pide nada nuevo a Facebook ni a Claude: usa lo que ya se trajo en este
+    mismo barrido. Por eso mirar la cola no cuesta ni un token.
+    """
+    kind, imgs = classify_attachment(post)
+    imgs = imgs or []
+    texto = (post.get("message") or "").strip()
+    if kind == "video":
+        estado = "video"
+    elif kind != "photo" or not imgs:
+        estado = "sin_foto"
+    elif not texto:
+        estado = "sin_texto"
+    else:
+        estado = "listo"
+    return {
+        "id": post["id"],
+        "clave": cola.clave(post["id"]),
+        "created_time": post.get("created_time", ""),
+        "texto": texto[:cola.MAX_TEXTO],
+        "foto": imgs[0] if imgs else "",
+        "n_fotos": len(imgs),
+        "estado": estado,
+    }
 
 
 def download_image(url, dest):
@@ -539,21 +569,77 @@ def main():
         log(f"DEBUG: {len(posts)} posts recibidos de la API.")
         for p in posts:
             log("DEBUG raw post ->\n" + json.dumps(p, ensure_ascii=False, indent=2))
-    new_posts = [p for p in posts if p["id"] not in processed]
-    new_posts.sort(key=lambda p: p.get("created_time", ""))  # más viejo primero
-    new_posts = new_posts[:MAX_POSTS_PER_RUN]
+    pendientes = [p for p in posts if p["id"] not in processed]
+    pendientes.sort(key=lambda p: p.get("created_time", ""))  # más viejo primero
+
+    # ----------------------------------------------------------------------
+    # Lo que se decidió desde el panel de Telegram
+    # ----------------------------------------------------------------------
+    control = cola.leer_control()
+    eliminados = set(control.get("eliminados") or [])
+    pausados = set(control.get("pausados") or [])
+    prioridad = set(control.get("prioridad") or [])
+
+    # Eliminados: se marcan como procesados para que no vuelvan a aparecer
+    # nunca más. El post sigue intacto en la página 1; lo único que pasa es
+    # que este bot ya no lo va a republicar.
+    descartados = [p for p in pendientes if p["id"] in eliminados]
+    if descartados:
+        for p in descartados:
+            processed.add(p["id"])
+        state["processed"] = sorted(processed)
+        save_state(state)
+        cola.soltar_eliminados(p["id"] for p in descartados)
+        pendientes = [p for p in pendientes if p["id"] not in eliminados]
+        log(f"{len(descartados)} post(s) descartados desde el panel; no se publican.")
+
+    # Foto de la cola para el panel. Se guarda ANTES de recortar por
+    # MAX_POSTS_PER_RUN: el panel tiene que mostrar todo lo que espera, no
+    # solo el que sale en esta corrida.
+    try:
+        cola.guardar_snapshot(
+            [resumen_para_cola(p) for p in pendientes],
+            extra={
+                "min_entre_posts": MIN_MINUTES_BETWEEN_POSTS,
+                "minutos_desde_ultima": minutes_since_last_publish(),
+                "total_pendientes": len(pendientes),
+            },
+        )
+    except Exception as e:
+        log(f"No se pudo guardar la foto de la cola: {e}")
+
+    # El control se poda con lo que sigue pendiente, para que no se acumulen
+    # identificadores de posts que ya salieron.
+    cola.limpiar_control(p["id"] for p in pendientes)
+
+    # Pausados: siguen en la cola y a la vista, pero no ocupan turno.
+    congelados = [p for p in pendientes if p["id"] in pausados]
+    if congelados:
+        log(f"{len(congelados)} post(s) en pausa desde el panel; se saltan.")
+    candidatos = [p for p in pendientes if p["id"] not in pausados]
+
+    # "Publicar ahora": lo que marcaste se pone al frente de la fila.
+    candidatos.sort(key=lambda p: (0 if p["id"] in prioridad else 1,
+                                   p.get("created_time", "")))
+
+    new_posts = candidatos[:MAX_POSTS_PER_RUN]
 
     if not new_posts:
-        log("Sin posts nuevos.")
+        log("Sin posts nuevos." if not pendientes else
+            f"Los {len(pendientes)} pendiente(s) están todos en pausa.")
         return
 
     # Turno de publicación: como máximo UNO por corrida y respetando el tiempo
     # mínimo desde la publicación anterior. Los posts que no son publicables
     # (video, sin foto, sin texto, descartados por Claude) sí se siguen
     # revisando y marcando, porque no ocupan turno.
-    allow_publish = can_publish_now()
+    urgente = new_posts[0]["id"] in prioridad
+    allow_publish = urgente or can_publish_now()
     mins = minutes_since_last_publish()
-    if allow_publish:
+    if urgente:
+        log("Pediste que este saliera ya desde el panel: se salta la espera y "
+            "va primero.")
+    elif allow_publish:
         log(f"Turno libre para publicar (última publicación hace "
             f"{'nunca' if mins is None else f'{mins:.1f} min'}).")
     else:

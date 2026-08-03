@@ -47,6 +47,8 @@ from pathlib import Path
 
 import requests
 
+import cola
+
 BASE_DIR = Path(__file__).resolve().parent
 PYTHON = sys.executable
 RELOJ_SELFCHECK = BASE_DIR / "state" / "selfcheck_clock.json"
@@ -236,6 +238,7 @@ def main():
     ciclo = 0
     fallos_seguidos = 0
     ya_avise_del_fallo = False
+    reinicio_pedido = False
     limite = time.monotonic() + MAX_RUNTIME_SECONDS if MAX_RUNTIME_SECONDS else None
 
     proximo_selfcheck = None
@@ -252,6 +255,19 @@ def main():
         ciclo += 1
         # Telegram primero: lo que mandas a mano tiene prioridad sobre el barrido.
         ok_tg = correr("telegram_listener.py")
+
+        # Botón 🔄 Reiniciar del chat: el listener deja la orden escrita y acá
+        # se recoge. Cerrar el turno ES el reinicio: el relevo ya encolado
+        # arranca solo en cuanto se libera el puesto. Se limpia la orden ANTES
+        # de guardar, para que el turno nuevo no la vuelva a encontrar y se
+        # reinicie en bucle.
+        if cola.hay_reinicio():
+            log("Reinicio pedido desde el chat; cierro el turno para que entre uno nuevo.")
+            cola.limpiar_reinicio()
+            guardar_estado()
+            reinicio_pedido = True
+            break
+
         if _parar:
             break
         ok_poll = correr("poll_and_publish.py")
@@ -300,7 +316,12 @@ def main():
 
     log("Cerrando limpiamente.")
     if not QUIET_LIFECYCLE:
-        avisar_telegram("🔴 El bot se detuvo. Si no fuiste tú, revísalo.")
+        avisar_telegram(
+            "🔄 Turno cerrado porque pediste reiniciar. El nuevo entra en seguida; "
+            "te aviso con el 🟢 cuando esté arriba."
+            if reinicio_pedido else
+            "🔴 El bot se detuvo. Si no fuiste tú, revísalo."
+        )
     return 0
 
 

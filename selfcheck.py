@@ -26,6 +26,7 @@ from pathlib import Path
 import requests
 
 import poll_and_publish as bot
+import cola
 
 BASE_DIR = Path(__file__).resolve().parent
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -154,6 +155,31 @@ def check_cola_telegram():
     add(None, f"Cola de Telegram: " + "; ".join(partes) + f" (hora {tg.TZ_LABEL}).")
 
 
+def check_panel():
+    """Revisa el panel de cola: que la lista esté fresca y qué tocaste en ella."""
+    edad = cola.edad_snapshot()
+    if edad is None:
+        add(None, "Panel de cola: todavía sin lista (se arma en el próximo barrido).")
+    elif edad > cola.FRESCA_MINUTOS * 60:
+        add(False, f"Panel de cola: la lista es de hace {edad/60:.0f} min; el bot "
+                   "no está barriendo como debería.")
+    else:
+        snap = cola.leer_snapshot()
+        add(True, f"Panel de cola: lista al día ({len(snap.get('items') or [])} "
+                  f"pendiente(s), actualizada hace {edad/60:.0f} min).")
+
+    ctrl = cola.leer_control()
+    marcados = []
+    if ctrl.get("prioridad"):
+        marcados.append(f"{len(ctrl['prioridad'])} marcado(s) para salir primero")
+    if ctrl.get("pausados"):
+        marcados.append(f"{len(ctrl['pausados'])} en pausa")
+    if ctrl.get("eliminados"):
+        marcados.append(f"{len(ctrl['eliminados'])} por descartar")
+    if marcados:
+        add(None, "Desde el panel: " + ", ".join(marcados) + ".")
+
+
 def check_telegram():
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         add(False, "Telegram: faltan TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID en los secrets.")
@@ -201,6 +227,7 @@ def main():
         check_backup_page(bot.PAGE_ID_BACKUP, bot.PAGE_TOKEN_BACKUP)
 
     check_ritmo()
+    check_panel()
     check_claude()
     check_telegram()
     check_cola_telegram()
@@ -210,13 +237,15 @@ def main():
         "🔎 AUTOCHEQUEO\n\n"
         + ("⚠️ Hay algo que revisar:\n\n" if hay_error else "Todo está bien y listo para funcionar solo.\n\n")
     )
-    cola = (
+    # Ojo con el nombre: se llama "pie" y no "cola" a propósito, porque «cola»
+    # ya es el módulo del panel y taparlo acá sería pedir un error más adelante.
+    pie = (
         f"\n\nEl barrido corre cada 3 minutos, pero publica de a UNO y con al menos "
         f"{bot.MIN_MINUTES_BETWEEN_POSTS:.0f} min de separación, para que nunca salgan "
         "varios de golpe. Si le mandas foto + descripción por aquí, te pregunta a qué "
         "hora publicarla y respeta esa hora."
     )
-    resumen = encabezado + "\n".join(lines) + cola
+    resumen = encabezado + "\n".join(lines) + pie
     send_summary(resumen)
     print("[chk] Autochequeo terminado.", flush=True)
     return not hay_error
