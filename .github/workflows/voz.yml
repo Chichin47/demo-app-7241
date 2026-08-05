@@ -5,8 +5,9 @@ name: prueba de voz
 # que es justo lo que no se puede probar desde otro lado.
 #
 #   1. Que la clave VOZ_API_KEY sirve.
-#   2. Que la voz clonada VEXVIP está en la biblioteca y con qué identificador.
-#   3. Que el servicio devuelve un audio de verdad, que queda para escuchar.
+#   2. Cuántos créditos quedan en la cuenta (esta consulta no gasta nada).
+#   3. Que la voz clonada VEXVIP está en la biblioteca y con qué identificador.
+#   4. Que el servicio devuelve un audio de verdad, que queda para escuchar.
 #
 # A propósito no lleva grupo de concurrencia: así corre al toque, en paralelo
 # con el turno del bot, sin hacer cola detrás de él ni cortarlo.
@@ -27,6 +28,14 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # Se mira antes y después de hablar, así se ve de paso cuánto costó la
+      # frase de prueba. Consultar el saldo es gratis.
+      - name: Créditos que quedan
+        continue-on-error: true
+        env:
+          VOZ_API_KEY: ${{ secrets.VOZ_API_KEY }}
+        run: python voz.py creditos
+
       - name: Buscar la voz en la biblioteca
         env:
           VOZ_API_KEY: ${{ secrets.VOZ_API_KEY }}
@@ -40,6 +49,7 @@ jobs:
         run: |
           python voz.py "Esto es una prueba de la voz del bot. Si escuchas esta frase completa, el servicio responde bien y la voz clonada es la correcta. Ya se puede publicar en video." /tmp/muestra.mp3
           ls -l /tmp/muestra.mp3
+          python voz.py creditos
 
       # La muestra queda colgada del resumen de la corrida, para bajarla y
       # escucharla desde el celular o la computadora.
