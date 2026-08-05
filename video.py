@@ -13,8 +13,8 @@ con la misma estructura que se usa en este tipo de contenido:
     │  o el clip, con vida     │    y encima los subtítulos
     │                          │
     ├──────────────────────────┤
-    │  franja de abajo: otra   │  ← un segundo plano, en bucle
-    │  toma, en bucle          │
+    │  franja de abajo: otra   │  ← también desenfocada, igual que la de
+    │  toma, desenfocada       │    arriba: la foto nítida es solo el centro
     └──────────────────────────┘
 
 Todo el trabajo pesado lo hace ffmpeg, que ya viene instalado en las máquinas
@@ -78,6 +78,12 @@ def margen_subtitulos(hay_sticker=True):
 FPS = 30
 DURACION_MAX = 30.0        # tope para reels, según lo pedido
 DURACION_MIN = 6.0
+
+# El acabado de las franjas que NO son la del centro: desenfoque fuerte, un
+# punto menos de luz y un punto más de color. Es lo que hace que la vista se
+# vaya sola a la foto nítida del medio. Va en un solo sitio para que la de
+# arriba y la de abajo salgan siempre iguales.
+DESENFOQUE = "gblur=sigma=34,eq=brightness=-0.10:saturation=1.15"
 
 # Cuánto dura cada toma antes de cortar a la siguiente. Corto a propósito: el
 # efecto que se busca es que la imagen "no pare quieta", y eso se logra con
@@ -198,11 +204,17 @@ def _movimiento(nombre, cuadros):
     return "1.15", centro_x, centro_y
 
 
-def _clip_de_foto(foto, segundos, ancho, alto, salida, movimiento="vaiven_horizontal"):
+def _clip_de_foto(foto, segundos, ancho, alto, salida, movimiento="vaiven_horizontal",
+                  acabado=""):
     """Convierte una foto fija en una toma con movimiento.
 
     La foto se agranda al doble del tamaño final antes de moverla: así el zoom
     no la pixela y el vaivén tiene de dónde sacar imagen para correrse.
+
+    `acabado` son filtros extra que se aplican YA con el tamaño final (por
+    ejemplo el desenfoque de la franja de abajo). Van después del movimiento a
+    propósito: desenfocar al final cuesta mucho menos que desenfocar el doble
+    de píxeles antes de recortar, y se ve exactamente igual.
     """
     cuadros = max(2, int(round(segundos * FPS)))
     z, x, y = _movimiento(movimiento, cuadros)
@@ -211,7 +223,8 @@ def _clip_de_foto(foto, segundos, ancho, alto, salida, movimiento="vaiven_horizo
         f"scale={grande_w}:{grande_h}:force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={grande_w}:{grande_h},setsar=1,"
         f"zoompan=z='{z}':x='{x}':y='{y}':d=1:s={ancho}x{alto}:fps={FPS},"
-        f"format=yuv420p"
+        + (f"{acabado}," if acabado else "")
+        + "format=yuv420p"
     )
     _correr(
         ["ffmpeg", "-y", "-v", "error",
@@ -335,8 +348,8 @@ def _franja_fondo(fuente, es_clip, segundos, tmp):
     salida = tmp / "fondo.mp4"
     filtro = (
         f"scale={LIENZO_W}:{LIENZO_H}:force_original_aspect_ratio=increase:flags=lanczos,"
-        f"crop={LIENZO_W}:{LIENZO_H},setsar=1,gblur=sigma=34,"
-        f"eq=brightness=-0.10:saturation=1.15,fps={FPS},format=yuv420p"
+        f"crop={LIENZO_W}:{LIENZO_H},setsar=1,{DESENFOQUE},"
+        f"fps={FPS},format=yuv420p"
     )
     if es_clip:
         entrada = ["-stream_loop", "-1", "-i", str(fuente)]
@@ -352,12 +365,19 @@ def _franja_fondo(fuente, es_clip, segundos, tmp):
 
 
 def _franja_pie(fuente, es_clip, segundos, tmp, pie_h=PIE_H):
-    """La franja de abajo: un segundo plano que se repite en bucle."""
+    """La franja de abajo: un segundo plano desenfocado.
+
+    Lleva el MISMO desenfoque que la franja de arriba (ver DESENFOQUE). Antes
+    iba nítida y la imagen quedaba repetida dos veces a la vista, peleando con
+    la del centro; borrosa, el ojo se va solo a la foto del medio y el reel se
+    lee de un golpe. Conserva su movimiento propio, muy lento, para que la
+    parte de abajo respire y no se vea como una foto pegada.
+    """
     salida = tmp / "pie.mp4"
     if es_clip:
         filtro = (
             f"scale={LIENZO_W}:{pie_h}:force_original_aspect_ratio=increase:flags=lanczos,"
-            f"crop={LIENZO_W}:{pie_h},setsar=1,fps={FPS},format=yuv420p"
+            f"crop={LIENZO_W}:{pie_h},setsar=1,{DESENFOQUE},fps={FPS},format=yuv420p"
         )
         _correr(
             ["ffmpeg", "-y", "-v", "error", "-stream_loop", "-1", "-i", str(fuente),
@@ -370,7 +390,9 @@ def _franja_pie(fuente, es_clip, segundos, tmp, pie_h=PIE_H):
     # del reel, queda lento y no pelea con el movimiento rápido del centro. Va
     # más cerrado a propósito, para que se lea como otro encuadre y no como la
     # misma imagen repetida debajo.
-    return _clip_de_foto(fuente, segundos, LIENZO_W, pie_h, salida, "pie_cerrado")
+    return _clip_de_foto(
+        fuente, segundos, LIENZO_W, pie_h, salida, "pie_cerrado", acabado=DESENFOQUE
+    )
 
 
 # ---------------------------------------------------------------------------

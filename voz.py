@@ -674,11 +674,14 @@ def sintetizar(texto, salida, voz=None, velocidad=None, con_marcas=True,
     }
 
 
-def cuanto_texto_entra(segundos, palabras_por_minuto=165):
+def cuanto_texto_entra(segundos, palabras_por_minuto=150):
     """Cuántas palabras entran en ese tiempo, para acotar el guion.
 
-    165 palabras por minuto es un ritmo de locución normal en español; con eso
-    un reel de 28 segundos admite unas 77 palabras.
+    150 palabras por minuto es el ritmo medido de verdad en esta voz (46
+    palabras en 18,8 segundos son 147). Antes acá decía 165, que es el ritmo de
+    un locutor de radio: con ese número un guion de 77 palabras salía de 31
+    segundos, el video se cortaba en 30 y la última frase quedaba comida. Con
+    150 un reel de 28 segundos admite unas 70 palabras y siempre cierra entero.
     """
     return int(segundos * palabras_por_minuto / 60)
 

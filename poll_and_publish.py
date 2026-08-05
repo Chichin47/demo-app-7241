@@ -301,9 +301,28 @@ Tu trabajo, dado el texto original de un post (título + diálogo) y la cantidad
       emojis. Aquí SÍ va la censura tipo maquillaje (vocales por números, sin virgulillas), porque \
       este texto se dibuja, no se lee en voz alta.
 
-   b) narracion: lo que dice la voz en off, de 55 a 75 palabras, sin excepción. Es un texto hablado \
-      corrido, en tercera persona, que cuenta la situación de principio a fin: engancha en la primera \
-      oración, cuenta qué pasó y cierra con una frase que invite a opinar. Reglas propias:
+   b) narracion: lo que dice la voz en off, de 60 a 72 palabras, sin excepción.
+
+      Lo más importante de todo: quien escucha el video NO ve la descripción escrita y muchas veces \
+      tampoco conoce el programa. La narración tiene que bastarse sola. Al terminar de escucharla, \
+      alguien que nunca vio nada de esto tiene que haber entendido la historia completa: quién, \
+      dónde, qué pasó exactamente, qué se dijeron y cómo quedó la cosa. Si el que escucha se queda \
+      preguntando "¿de qué están hablando?", el guion está mal hecho.
+
+      Cómo se arma, en este orden:
+      - ARRANQUE (1 oración): planta la escena con datos reales del post. Quiénes son y dónde están. \
+        No arranques con una frase de gancho vacía.
+      - CUERPO (el grueso): cuenta lo que pasó siguiendo el diálogo original, intervención por \
+        intervención y en el mismo orden, pasado a habla natural: "Aldo le reclamó que ya no lo \
+        aguantaba, y Fabio le contestó que para él todo era un juego". No te saltes intervenciones \
+        que cambien el sentido, no las inviertas de orden y no inventes ninguna que no esté. Si el \
+        post no trae diálogo, el cuerpo cuenta con detalle lo que sí dice el original.
+      - CIERRE (1 oración): cómo terminó, o una pregunta que invite a opinar.
+
+      Y estas reglas de forma:
+      - TODO lo que digas tiene que salir del texto original. Prohibido el relleno inventado tipo \
+        "las redes explotaron", "nadie se lo esperaba" o "esto se salió de control" cuando el post \
+        no dice nada de eso: son palabras gastadas que ocupan el lugar del contexto que sí importa.
       - NADA de hashtags, ni emojis, ni "Nombre:" delante de las frases, ni acotaciones entre \
         paréntesis: todo eso se escucha mal. Si citas a alguien, dilo natural: "Fabio le respondió \
         que para él todo es un juego".
@@ -313,6 +332,8 @@ Tu trabajo, dado el texto original de un post (título + diálogo) y la cantidad
         esquiva la palabra fuerte diciendo lo mismo de otro modo ("lo insultó", "le dijo de todo", \
         "se le fue encima con un comentario racista"). Nunca escribas el insulto tal cual.
       - Números y siglas escritos como se pronuncian ("veinticuatro siete", no "24/7").
+      - El titulo_reel y la narración tienen que hablar de lo mismo: el letrero de arriba es el \
+        anzuelo de la historia que se va a contar, no un titular suelto.
 
 Responde ÚNICAMENTE llamando a la herramienta submit_edit con el JSON estructurado."""
 
@@ -356,9 +377,13 @@ SUBMIT_TOOL = {
             "narracion": {
                 "type": "string",
                 "description": (
-                    "Guion hablado para la voz en off: 55 a 75 palabras, prosa "
-                    "corrida en tercera persona, oraciones cortas, sin hashtags, "
-                    "sin emojis, sin nombres con dos puntos y sin palabras "
+                    "Guion hablado para la voz en off: 60 a 72 palabras, prosa "
+                    "corrida en tercera persona. Tiene que contar la historia "
+                    "COMPLETA y entenderse sola, sin leer la descripción: "
+                    "escena, lo que se dijeron intervención por intervención en "
+                    "el orden original, y cierre. Todo sacado del post, sin "
+                    "relleno inventado. Oraciones cortas, sin hashtags, sin "
+                    "emojis, sin nombres con dos puntos y sin palabras "
                     "censuradas con números."
                 ),
             },
