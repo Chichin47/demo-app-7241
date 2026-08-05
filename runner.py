@@ -24,6 +24,10 @@ a mirarlo.
 Configuración (variables de entorno, todas opcionales menos los secretos):
 
   SWEEP_SECONDS      segundos entre barridos (por defecto 180 = 3 min)
+  ATENCION_SECONDS   cada cuánto se mira el chat MIENTRAS se espera el próximo
+                     barrido (por defecto 25). Es lo que hace que los botones
+                     respondan en seguida sin tener que barrer la página 1 más
+                     seguido. En 0 se apaga.
   JITTER_SECONDS     variación aleatoria que se suma/resta al intervalo
                      (por defecto 20). Evita caer siempre en el segundo
                      exacto, que es un patrón muy de robot.
@@ -77,6 +81,12 @@ def env_num(nombre, por_defecto, tipo=float):
 
 SWEEP_SECONDS = max(30.0, env_num("SWEEP_SECONDS", 180, float))
 JITTER_SECONDS = max(0.0, env_num("JITTER_SECONDS", 20, float))
+# Cada cuánto se pasa por el chat MIENTRAS se espera el próximo barrido. Es lo
+# que hace que tocar un botón se sienta inmediato en vez de tardar lo que falte
+# para el barrido. No tiene nada que ver con la página 1: eso sigue mirándose
+# cada SWEEP_SECONDS. En 0 se apaga y el chat vuelve a atenderse una vez por
+# ciclo, como antes.
+ATENCION_SECONDS = max(0.0, env_num("ATENCION_SECONDS", 25, float))
 STEP_TIMEOUT = max(60.0, env_num("STEP_TIMEOUT", 600, float))
 SELFCHECK_HOURS = max(0.0, env_num("SELFCHECK_HOURS", 12, float))
 TZ_OFFSET_HOURS = env_num("TZ_OFFSET_HOURS", -5, float)
@@ -144,8 +154,13 @@ def guardar_reloj_selfcheck(cuando):
         log(f"No se pudo guardar el reloj del autochequeo: {e}")
 
 
-def correr(script):
-    """Corre un script del proyecto como subproceso. Devuelve True si salió bien."""
+def correr(script, silencioso=False):
+    """Corre un script del proyecto como subproceso. Devuelve True si salió bien.
+
+    Con silencioso=True no se anota el "OK en tal cosa": son las pasadas cortas
+    por el chat, que ocurren muchas veces por ciclo y llenarían el log de ruido.
+    Los errores sí se anotan siempre.
+    """
     ruta = BASE_DIR / script
     if not ruta.exists():
         log(f"{script}: no existe en {BASE_DIR}; me lo salto.")
@@ -167,7 +182,8 @@ def correr(script):
     if proc.returncode != 0:
         log(f"{script}: terminó con error (código {proc.returncode}) en {dur:.1f}s.")
         return False
-    log(f"{script}: OK en {dur:.1f}s.")
+    if not silencioso:
+        log(f"{script}: OK en {dur:.1f}s.")
     return True
 
 
@@ -209,6 +225,65 @@ def esperar(segundos):
         if queda <= 0:
             return
         time.sleep(min(2.0, queda))
+
+
+def _huella_estado():
+    """Foto de cómo están los archivos de estado, para notar si algo cambió."""
+    try:
+        return {p.name: p.stat().st_mtime_ns
+                for p in sorted((BASE_DIR / "state").glob("*.json"))}
+    except Exception:
+        return {}
+
+
+def esperar_atendiendo(segundos):
+    """Espera hasta el próximo barrido, pero mirando el chat cada tanto.
+
+    El barrido de la página 1 puede seguir siendo cada tres minutos —los posts
+    nuevos no aparecen más rápido que eso—, pero el chat no puede esperar tres
+    minutos: tocás un botón y querés que pase algo. Antes el listener corría una
+    sola vez por ciclo, así que una respuesta tardaba lo que faltara para el
+    próximo barrido, y encima había que sumarle lo que durara ese barrido (si
+    justo estaba armando un reel, varios minutos más).
+
+    Ahora, mientras se espera, se pasa por el chat cada ATENCION_SECONDS. El
+    barrido pesado no se toca; lo único que se repite es el listener, que es
+    barato: se levanta, lee lo que llegó y se va.
+
+    Devuelve True si hay que cortar el ciclo (pediste reiniciar o llegó una
+    señal de apagado).
+    """
+    fin = time.monotonic() + segundos
+    while not _parar:
+        queda = fin - time.monotonic()
+        if queda <= 0:
+            return False
+        # Si lo que falta es menos que un tramo, se duerme y listo: no vale la
+        # pena levantar el listener para adelantarse dos segundos al barrido.
+        if not ATENCION_SECONDS or queda <= ATENCION_SECONDS + 5:
+            esperar(queda)
+            return False
+
+        esperar(ATENCION_SECONDS)
+        if _parar:
+            return True
+
+        antes = _huella_estado()
+        correr("telegram_listener.py", silencioso=True)
+
+        # El botón 🔄 Reiniciar deja la orden escrita; hay que recogerla acá
+        # también, porque si no se quedaría esperando al próximo barrido, que es
+        # justo lo que se está tratando de no hacer.
+        if cola.hay_reinicio():
+            return True
+
+        # Solo se sube el registro si el listener movió algo. Sin esto habría un
+        # empuje al repositorio cada tanto sin nada adentro; con esto, cuando
+        # atendés algo por chat queda guardado enseguida y no se pierde si el
+        # turno se corta.
+        if _huella_estado() != antes:
+            guardar_estado()
+    return True
 
 
 def faltan_secretos():
@@ -312,7 +387,15 @@ def main():
                 break
             espera = min(espera, queda)
         log(f"Ciclo {ciclo} terminado; siguiente en {espera:.0f}s.")
-        esperar(espera)
+        # Durante la espera se sigue atendiendo el chat. Si mientras tanto
+        # pediste reiniciar, se corta acá mismo en vez de esperar el barrido.
+        if esperar_atendiendo(espera):
+            if cola.hay_reinicio():
+                log("Reinicio pedido desde el chat; cierro el turno para que entre uno nuevo.")
+                cola.limpiar_reinicio()
+                guardar_estado()
+                reinicio_pedido = True
+            break
 
     log("Cerrando limpiamente.")
     if not QUIET_LIFECYCLE:
