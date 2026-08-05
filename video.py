@@ -9,8 +9,8 @@ con la misma estructura que se usa en este tipo de contenido:
     │  título en amarillo      │    imagen ampliada y desenfocada
     ├──────────────────────────┤
     │                          │
-    │  franja central: la foto │  ← acá va el movimiento (zoom lento, paneo)
-    │  o el clip, con vida     │    y encima los subtítulos
+    │  franja central: la foto │  ← acá va el movimiento (zoom y paneos
+    │  o el clip, con vida     │    suaves) y encima los subtítulos
     │                          │
     ├──────────────────────────┤
     │  franja de abajo: otra   │  ← también desenfocada, igual que la de
@@ -85,15 +85,31 @@ DURACION_MIN = 6.0
 # arriba y la de abajo salgan siempre iguales.
 DESENFOQUE = "gblur=sigma=34,eq=brightness=-0.10:saturation=1.15"
 
-# Cuánto dura cada toma antes de cortar a la siguiente. Corto a propósito: el
-# efecto que se busca es que la imagen "no pare quieta", y eso se logra con
-# tomas de dos o tres segundos que se cortan en seco, no con cruces lentos.
-SEGUNDOS_POR_TOMA = 2.6
-# Cuántas idas y vueltas hace el vaivén dentro de una misma toma.
-VAIVENES = 2
-# Cruce entre tomas. Cero es corte directo, que es lo que se ve en el material
-# de referencia; se deja configurable por si alguna vez se quiere suavizar.
-CRUCE = 0.0
+# Cuánto dura cada toma antes de pasar a la siguiente. Tres segundos es el
+# punto justo: alcanza para que un paneo cruce la foto despacio y no da tiempo
+# a aburrirse. Menos que esto obliga a mover más rápido para recorrer lo mismo,
+# y ahí es donde el movimiento se siente brusco.
+SEGUNDOS_POR_TOMA = 3.0
+# Cuánto dura el cruce de una toma a la otra. Medio segundo: se nota el
+# desvanecimiento pero no se hace lento. En cero vuelve al corte seco.
+CRUCE = 0.5
+
+# Los cruces se van turnando, uno distinto en cada empalme, para que el video
+# no se sienta siempre igual. Todos son suaves a propósito: desvanecidos,
+# barridos blandos y aperturas. Nada de cortes duros ni de pasar por negro, que
+# en un reel corto se leen como un error de armado.
+TRANSICIONES = (
+    "fade",          # el clásico: una se apaga mientras la otra aparece
+    "smoothleft",    # barrido blando hacia la izquierda
+    "dissolve",      # se disuelve por manchas, muy orgánico
+    "circleopen",    # se abre un círculo desde el centro
+    "smoothup",      # barrido blando hacia arriba
+    "hblur",         # se desenfoca, cambia, y vuelve a enfocar
+    "smoothright",
+    "radial",        # gira como una aguja de reloj
+    "smoothdown",
+    "circleclose",
+)
 
 AMARILLO = (255, 214, 10)
 NEGRO = (12, 12, 12)
@@ -156,55 +172,91 @@ def tiene_audio(ruta):
 
 #: Nombres de los movimientos, en el orden en que se van turnando. El orden
 #: importa: nunca se repite el mismo dos tomas seguidas y siempre alterna
-#: desplazamiento con zoom, que es lo que hace que la foto parezca viva.
+#: desplazamiento con zoom, que es lo que hace que la foto parezca viva. Son
+#: diez, así que en un reel de treinta segundos no se repite ninguno.
 MOVIMIENTOS = (
-    "vaiven_horizontal",
-    "zoom_dentro",
-    "vaiven_vertical",
-    "zoom_fuera",
-    "vaiven_diagonal",
-    "zoom_pulso",
+    "acercar",
+    "paneo_derecha",
+    "alejar",
+    "paneo_arriba",
+    "acercar_derecha",
+    "paneo_izquierda",
+    "respiro",
+    "paneo_abajo",
+    "alejar_izquierda",
+    "deriva_diagonal",
 )
+
+# Cuánto se agranda la foto en los paneos. Este número es, ni más ni menos, lo
+# que el paneo va a recorrer: con 1.22 la imagen se corre un 22% del ancho de
+# la pantalla de punta a punta de la toma. Antes era 1.30 recorrido dos veces
+# de ida y vuelta dentro de la misma toma, o sea 120% en dos segundos y medio,
+# y por eso el movimiento lateral se veía brusco. Ahora es un solo viaje suave.
+ZOOM_PANEO = 1.22
 
 
 def _movimiento(nombre, cuadros):
     """Expresiones de zoom y desplazamiento para una toma.
 
-    Todo se calcula sobre «on», que es el número de cuadro que va saliendo. Un
-    vaivén completo es un coseno: arranca de un extremo, cruza al otro y vuelve.
-    Con dos ciclos metidos en dos segundos y medio, el ojo lee movimiento rápido
-    de lado a lado, que es justo el efecto buscado.
+    Todo se calcula sobre «on», que es el número de cuadro que va saliendo.
+
+    La clave de que se vea suave está en `suave`: en vez de correr la foto a
+    velocidad pareja (que arranca de golpe y frena de golpe), se usa media
+    curva de coseno. Eso hace que la toma empiece quieta, tome velocidad en el
+    medio y se detenga sola al final, que es como se mueve una cámara de
+    verdad. Y cada toma hace UN solo viaje: nada de ir y volver, que era lo que
+    daba el efecto de sacudida.
     """
     n = max(1, cuadros)
-    ciclos = VAIVENES
     # Recorridos disponibles dentro de la imagen ampliada.
     ancho_libre = "(iw-iw/zoom)"
     alto_libre = "(ih-ih/zoom)"
-    # Un coseno que va de 0 a 1 y vuelve, tantas veces como ciclos.
-    onda = f"(1-cos(2*PI*{ciclos}*on/{n}))/2"
-    onda_lenta = f"(1-cos(2*PI*1*on/{n}))/2"
+    # Va de 0 a 1 una sola vez, entrando y saliendo despacio.
+    suave = f"(1-cos(PI*on/{n}))/2"
+    # Va de 0 a 1 y vuelve a 0. Solo para el latido y para la franja de abajo.
+    ida_y_vuelta = f"(1-cos(2*PI*on/{n}))/2"
     centro_x, centro_y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+    z = f"{ZOOM_PANEO:.2f}"
 
-    if nombre == "vaiven_horizontal":
-        return "1.30", f"{ancho_libre}*{onda}", centro_y
-    if nombre == "vaiven_vertical":
-        return "1.30", centro_x, f"{alto_libre}*{onda}"
-    if nombre == "vaiven_diagonal":
-        return "1.30", f"{ancho_libre}*{onda}", f"{alto_libre}*(1-{onda})"
-    if nombre == "zoom_dentro":
-        return f"1.02+0.30*on/{n}", centro_x, centro_y
-    if nombre == "zoom_fuera":
-        return f"1.32-0.30*on/{n}", centro_x, centro_y
-    if nombre == "zoom_pulso":
-        return f"1.06+0.24*{onda_lenta}", centro_x, centro_y
+    # --- Paneos: la foto se corre, el encuadre no cambia de tamaño.
+    if nombre == "paneo_derecha":
+        return z, f"{ancho_libre}*{suave}", centro_y
+    if nombre == "paneo_izquierda":
+        return z, f"{ancho_libre}*(1-{suave})", centro_y
+    if nombre == "paneo_abajo":
+        return z, centro_x, f"{alto_libre}*{suave}"
+    if nombre == "paneo_arriba":
+        return z, centro_x, f"{alto_libre}*(1-{suave})"
+    if nombre == "deriva_diagonal":
+        # Cruza en diagonal, pero recorriendo menos en cada eje: si no, dos
+        # movimientos juntos vuelven a sentirse rápidos.
+        return "1.24", f"{ancho_libre}*(0.15+0.70*{suave})", \
+               f"{alto_libre}*(0.85-0.70*{suave})"
+
+    # --- Zooms puros.
+    if nombre == "acercar":
+        return f"1.04+0.22*{suave}", centro_x, centro_y
+    if nombre == "alejar":
+        return f"1.26-0.22*{suave}", centro_x, centro_y
+    if nombre == "respiro":
+        # Un latido apenas perceptible, para las tomas de descanso.
+        return f"1.08+0.09*{ida_y_vuelta}", centro_x, centro_y
+
+    # --- Mezclas: se acerca mientras se corre, como un travelling.
+    if nombre == "acercar_derecha":
+        return f"1.06+0.20*{suave}", f"{ancho_libre}*(0.30+0.40*{suave})", centro_y
+    if nombre == "alejar_izquierda":
+        return f"1.26-0.20*{suave}", f"{ancho_libre}*(0.70-0.40*{suave})", centro_y
+
     if nombre == "pie_cerrado":
-        # Para la franja de abajo: encuadre bien cerrado y un solo barrido
-        # lateral en todo el reel, para que se sienta otro plano.
-        return "1.70", f"{ancho_libre}*{onda_lenta}", centro_y
+        # Para la franja de abajo: encuadre cerrado y un solo viaje de ida y
+        # vuelta repartido en todo el reel, o sea lentísimo. Como además va
+        # desenfocada, alcanza para que la parte de abajo respire.
+        return "1.32", f"{ancho_libre}*{ida_y_vuelta}", centro_y
     return "1.15", centro_x, centro_y
 
 
-def _clip_de_foto(foto, segundos, ancho, alto, salida, movimiento="vaiven_horizontal",
+def _clip_de_foto(foto, segundos, ancho, alto, salida, movimiento="acercar",
                   acabado=""):
     """Convierte una foto fija en una toma con movimiento.
 
@@ -237,12 +289,17 @@ def _clip_de_foto(foto, segundos, ancho, alto, salida, movimiento="vaiven_horizo
     return salida
 
 
-def _encadenar(clips, salida, tmp):
-    """Pega las tomas una detrás de otra.
+def _encadenar(clips, salida, tmp, arranque=0):
+    """Pega las tomas una detrás de otra, cruzando de una a la siguiente.
 
-    Por defecto el corte es directo, sin cruce: es lo que se ve en el material
-    de referencia y lo que sostiene el ritmo. Si se pone un CRUCE mayor que
-    cero, se usa un fundido corto entre toma y toma.
+    Cada empalme usa un cruce distinto, sacado de TRANSICIONES y turnándose:
+    una se desvanece, la otra se disuelve, la de más allá abre un círculo. Es
+    lo que hace que el video no se sienta siempre igual aunque la foto sea
+    siempre la misma. Con CRUCE en cero vuelve al corte seco de antes, que se
+    pega sin recodificar y es instantáneo.
+
+    `arranque` corre el turno de las transiciones, para que dos reels seguidos
+    no empiecen con el mismo cruce.
     """
     if len(clips) == 1:
         shutil.copy(clips[0], salida)
@@ -266,20 +323,25 @@ def _encadenar(clips, salida, tmp):
     for c in clips:
         entradas += ["-i", str(c)]
     duraciones = [duracion(c) for c in clips]
-    partes, previo, desplazamiento = [], "[0:v]", 0.0
+    partes, previo, desplazamiento, usadas = [], "[0:v]", 0.0, []
     for i in range(1, len(clips)):
+        # El cruce arranca CRUCE segundos antes de que se acabe la toma
+        # anterior, así que cada empalme se come ese pedacito del total.
         desplazamiento += duraciones[i - 1] - CRUCE
+        cruce = TRANSICIONES[(arranque + i - 1) % len(TRANSICIONES)]
+        usadas.append(cruce)
         etiqueta = f"[x{i}]"
         partes.append(
-            f"{previo}[{i}:v]xfade=transition=fade:duration={CRUCE}:"
+            f"{previo}[{i}:v]xfade=transition={cruce}:duration={CRUCE}:"
             f"offset={max(0.0, desplazamiento):.3f}{etiqueta}"
         )
         previo = etiqueta
+    log(f"Cruces entre tomas: {', '.join(usadas)}.")
     _correr(
         ["ffmpeg", "-y", "-v", "error"] + entradas +
         ["-filter_complex", ";".join(partes), "-map", previo,
          "-c:v", "libx264", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-         str(salida)],
+         "-r", str(FPS), str(salida)],
         "unión de las tomas",
     )
     return salida
@@ -292,18 +354,23 @@ def _encadenar(clips, salida, tmp):
 def plan_de_tomas(cantidad_fotos, segundos):
     """Arma la lista de tomas: qué foto y con qué movimiento va cada una.
 
-    La idea es exactamente la del material de referencia: la misma foto vuelve
-    varias veces, pero nunca con el mismo movimiento dos veces seguidas. Con dos
-    fotos y seis movimientos alcanza para que treinta segundos no se sientan
-    repetidos.
+    La misma foto vuelve varias veces, pero nunca con el mismo movimiento dos
+    veces seguidas. Son diez movimientos y en treinta segundos entran diez
+    tomas, así que dentro de un mismo reel no se repite ninguno.
+
+    Además, cada reel arranca por un movimiento distinto, elegido a partir de
+    cuánto dura. No es al azar (el bot tiene que dar siempre el mismo resultado
+    con la misma entrada), pero como cada narración dura distinto, dos videos
+    seguidos no empiezan nunca igual.
     """
     cantidad_fotos = max(1, cantidad_fotos)
     cuantas = max(1, int(round(segundos / SEGUNDOS_POR_TOMA)))
     dura = segundos / cuantas
+    arranque = int(round(segundos * 10)) % len(MOVIMIENTOS)
     plan = []
     for i in range(cuantas):
         foto = i % cantidad_fotos
-        movimiento = MOVIMIENTOS[i % len(MOVIMIENTOS)]
+        movimiento = MOVIMIENTOS[(arranque + i) % len(MOVIMIENTOS)]
         plan.append((foto, movimiento, dura))
     return plan
 
@@ -340,7 +407,8 @@ def _franja_central(fotos, clip, segundos, tmp, centro_h=CENTRO_H):
             )
         )
     log(f"Franja central: {len(piezas)} tomas de {plan[0][2]:.1f} s sobre {len(fotos)} foto(s).")
-    return _encadenar(piezas, salida, tmp)
+    log("Movimientos: " + ", ".join(m for _, m, _ in plan) + ".")
+    return _encadenar(piezas, salida, tmp, arranque=int(round(segundos * 10)))
 
 
 def _franja_fondo(fuente, es_clip, segundos, tmp):
