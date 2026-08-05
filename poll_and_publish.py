@@ -309,7 +309,8 @@ Tu trabajo, dado el texto original de un post (título + diálogo) y la cantidad
       emojis. Aquí SÍ va la censura tipo maquillaje (vocales por números, sin virgulillas), porque \
       este texto se dibuja, no se lee en voz alta.
 
-   b) narracion: lo que dice la voz en off, de 60 a 72 palabras, sin excepción.
+   b) narracion: lo que dice la voz en off, de 62 a 80 palabras. Usa las que necesites para \
+      que la historia entre COMPLETA; si con 65 ya cerraste, no rellenes.
 
       Lo más importante de todo: quien escucha el video NO ve la descripción escrita y muchas veces \
       tampoco conoce el programa. La narración tiene que bastarse sola. Al terminar de escucharla, \
@@ -325,7 +326,16 @@ Tu trabajo, dado el texto original de un post (título + diálogo) y la cantidad
         aguantaba, y Fabio le contestó que para él todo era un juego". No te saltes intervenciones \
         que cambien el sentido, no las inviertas de orden y no inventes ninguna que no esté. Si el \
         post no trae diálogo, el cuerpo cuenta con detalle lo que sí dice el original.
-      - CIERRE (1 oración): cómo terminó, o una pregunta que invite a opinar.
+      - CIERRE: acá va SIEMPRE la última intervención del diálogo, la que remata. Es la parte \
+        más importante del guion y la que más se cae: el video no puede terminar a mitad del \
+        ida y vuelta. Si el original cierra con una respuesta filosa, una burla o una reacción \
+        (alguien que se queda callado, que se sonroja, que se ríe), eso se cuenta sí o sí, y \
+        recién después, si sobra lugar, va una pregunta que invite a opinar.
+
+      Y una regla de reparto que manda sobre todas: el remate NO se negocia. Si te estás \
+      quedando sin palabras, achicá el arranque y resumí las intervenciones del medio, pero el \
+      final se cuenta entero. Un guion que se corta antes del golpe está mal hecho aunque todo \
+      lo anterior esté perfecto.
 
       Y estas reglas de forma:
       - TODO lo que digas tiene que salir del texto original. Prohibido el relleno inventado tipo \
@@ -387,11 +397,12 @@ SUBMIT_TOOL = {
             "narracion": {
                 "type": "string",
                 "description": (
-                    "Guion hablado para la voz en off: 60 a 72 palabras, prosa "
+                    "Guion hablado para la voz en off: 62 a 80 palabras, prosa "
                     "corrida en tercera persona. Tiene que contar la historia "
                     "COMPLETA y entenderse sola, sin leer la descripción: "
                     "escena, lo que se dijeron intervención por intervención en "
-                    "el orden original, y cierre. Todo sacado del post, sin "
+                    "el orden original, y el remate final del diálogo, que es "
+                    "obligatorio y nunca se recorta. Todo sacado del post, sin "
                     "relleno inventado. Oraciones cortas, sin hashtags, sin "
                     "emojis, sin nombres con dos puntos y sin palabras "
                     "censuradas con números."
@@ -450,9 +461,13 @@ def ask_claude(original_text, num_images, manual=False):
 # Guion del reel
 # ---------------------------------------------------------------------------
 
-# Cuánto dura como máximo la narración. El reel se corta en 30 s y hay que
-# dejarle aire al final para que la última palabra no quede pisada.
-SEGUNDOS_DE_NARRACION = 28
+# Cuánto dura como máximo la narración. El video se corta en 34 s y hay que
+# dejarle aire al final para que la última palabra no quede pisada. Antes acá
+# decía 28, que daban 70 palabras: alcanzaba para casi todo, pero en los posts
+# de cinco o seis intervenciones el guion se quedaba sin lugar justo antes del
+# remate y el video terminaba sin el golpe. La duración es una referencia, no
+# una meta: primero que la historia cierre entera.
+SEGUNDOS_DE_NARRACION = 32
 
 # Lo mismo que usa el compositor de imágenes, para poder deshacer la censura de
 # maquillaje en el texto hablado: leído en voz alta, "1d10t4" no suena a nada.

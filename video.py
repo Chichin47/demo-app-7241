@@ -76,7 +76,11 @@ def margen_subtitulos(hay_sticker=True):
     return medidas(hay_sticker)[2] + 100
 
 FPS = 30
-DURACION_MAX = 30.0        # tope para reels, según lo pedido
+# Techo del reel. Treinta segundos era el número redondo, pero cortaba historias
+# justo antes del remate: mejor que el video se estire unos segundos y el chiste
+# cierre, a que dure bonito y no se entienda. Treinta y cuatro es el margen para
+# que un guion largo entre completo; casi ninguno llega hasta acá.
+DURACION_MAX = 34.0
 DURACION_MIN = 6.0
 
 # El acabado de las franjas que NO son la del centro: desenfoque fuerte, un
