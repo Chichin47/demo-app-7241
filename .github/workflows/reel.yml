@@ -58,33 +58,41 @@ jobs:
         continue-on-error: true
         run: sudo apt-get install -y -qq fonts-noto-color-emoji
 
-      # Solo para poder tomar una foto de verdad de la página 1, que se lee y
-      # nada más. Si el sobre no está, la prueba usa otra foto y sigue igual.
+      # Los mismos dos sobres que carga el bot, y en el mismo orden, para que
+      # la prueba trabaje con exactamente la misma configuración que él. Acá
+      # sirven para una sola cosa: mirar la página 1 y bajar una foto de
+      # verdad. Esta prueba no publica nada en ninguna parte. Si los sobres no
+      # están, la prueba usa otra foto y sigue igual.
       - name: Load config
         continue-on-error: true
         env:
           CONFIG_B64: ${{ secrets.CONFIG_B64 }}
+          CONFIG2_B64: ${{ secrets.CONFIG2_B64 }}
         run: |
-          if [ -z "$CONFIG_B64" ]; then
-            echo "Sin sobre de configuración; la prueba usará otra foto."
-            exit 0
-          fi
-          printf '%s' "$CONFIG_B64" | base64 -d > "$RUNNER_TEMP/cfg.env"
-          while IFS= read -r line || [ -n "$line" ]; do
-            case "$line" in ''|'#'*) continue ;; esac
-            key="${line%%=*}"
-            val="${line#*=}"
-            key="$(printf '%s' "$key" | tr -d '[:space:]')"
-            [ -z "$key" ] && continue
-            [ "$key" = "$line" ] && continue
-            case "$key" in PAGE_ID_MAIN|PAGE_TOKEN_MAIN) ;; *) continue ;; esac
-            if [ "${#val}" -ge 12 ]; then
-              echo "::add-mask::$val"
+          cargar() {
+            sobre="$1"; nombre="$2"
+            if [ -z "$sobre" ]; then
+              echo "Sin $nombre."
+              return 0
             fi
-            printf '%s=%s\n' "$key" "$val" >> "$GITHUB_ENV"
-          done < "$RUNNER_TEMP/cfg.env"
-          rm -f "$RUNNER_TEMP/cfg.env"
-          echo "Config cargada (solo lo de la página 1, para mirar una foto)."
+            printf '%s' "$sobre" | base64 -d > "$RUNNER_TEMP/cfg.env"
+            while IFS= read -r line || [ -n "$line" ]; do
+              case "$line" in ''|'#'*) continue ;; esac
+              key="${line%%=*}"
+              val="${line#*=}"
+              key="$(printf '%s' "$key" | tr -d '[:space:]')"
+              [ -z "$key" ] && continue
+              [ "$key" = "$line" ] && continue
+              if [ "${#val}" -ge 12 ]; then
+                echo "::add-mask::$val"
+              fi
+              printf '%s=%s\n' "$key" "$val" >> "$GITHUB_ENV"
+            done < "$RUNNER_TEMP/cfg.env"
+            rm -f "$RUNNER_TEMP/cfg.env"
+            echo "$nombre cargado."
+          }
+          cargar "$CONFIG_B64" "sobre principal"
+          cargar "$CONFIG2_B64" "sobre extra"
 
       - name: Créditos antes
         continue-on-error: true
