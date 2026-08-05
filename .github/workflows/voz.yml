@@ -28,6 +28,18 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # Hace falta para medir cuánto dura el audio. Sin esto la muestra sale
+      # igual, pero no se sabría si dura lo que tiene que durar.
+      - name: Instalar ffmpeg
+        run: |
+          if command -v ffprobe >/dev/null; then
+            echo "ffmpeg ya estaba."
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          fi
+          ffprobe -version | head -1
+
       # Se mira antes y después de hablar, así se ve de paso cuánto costó la
       # frase de prueba. Consultar el saldo es gratis.
       - name: Créditos que quedan

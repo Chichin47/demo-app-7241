@@ -69,6 +69,23 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # ffmpeg es lo que arma el video y mide el audio. Sin él NO hay reels:
+      # el bot sigue publicando fotos, pero el video nunca sale. La máquina de
+      # GitHub no lo trae puesto, así que se instala acá.
+      #
+      # Va con continue-on-error a propósito: si un día el instalador falla, el
+      # turno no se cae; simplemente ese día todo sale en foto.
+      - name: Instalar ffmpeg
+        continue-on-error: true
+        run: |
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+            echo "ffmpeg ya estaba."
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          fi
+          ffmpeg -version | head -1 || echo "SIN ffmpeg: hoy todo sale en foto."
+
       # Los reels llevan emojis dibujados en el letrero de arriba, y para eso
       # hace falta la fuente de emojis a color. Si no se pudiera instalar, el
       # video sale igual, solo que sin los emojis: por eso nunca corta el turno.
