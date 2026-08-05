@@ -19,6 +19,13 @@ Configuración (todo por variables de entorno, nada escrito en el código):
     VOZ_ID          id ya resuelto, con prefijo; si se pone, se salta la búsqueda
     VOZ_VELOCIDAD   0.5 a 1.5                                (por defecto 1.0)
     VOZ_API_BASE    por si alguna vez cambia el dominio
+    VOZ_API_TAREAS  puerta donde se preguntan los encargos    (por defecto /v1)
+    VOZ_ESPERA_MAX  segundos de paciencia por audio           (por defecto 300)
+
+Ojo con cómo trabaja el servicio: pedir el audio no devuelve el audio. Devuelve
+un número de encargo y hay que volver a preguntar por él hasta que esté hecho.
+Eso lo resuelve `esperar_tarea()` por dentro; quien llama a `sintetizar()` no se
+entera y recibe el mp3 ya bajado, como siempre.
 
 Uso:
 
@@ -29,6 +36,7 @@ Uso:
     r["marcas"]    -> [(palabra, inicio, fin)] o None si el servicio no las dio
 """
 import os
+import re
 import json
 import time
 import subprocess
@@ -64,6 +72,22 @@ RUTA_LISTADO = "/voices"
 TAMANO_MAX_PAGINA = 100
 
 TIEMPO_LIMITE = 180
+
+# El pedido de audio NO devuelve el audio. Devuelve un número de encargo
+# ("task_id") y el servicio se pone a fabricarlo por su cuenta; hay que volver
+# a preguntar cada tanto hasta que esté. Esa pregunta va por otra puerta: las
+# tareas viven en /v1, no en /v3.
+API_TAREAS = os.environ.get(
+    "VOZ_API_TAREAS", re.sub(r"/v\d+$", "", API_BASE) + "/v1"
+).rstrip("/")
+
+# Cuánto se espera como mucho a que el encargo esté listo. Una narración de
+# reel son 30 segundos de audio y suele salir en menos de uno; cinco minutos es
+# margen de sobra para un día en que el servicio esté cargado.
+ESPERA_MAX_TAREA = int(os.environ.get("VOZ_ESPERA_MAX", "300"))
+# Cada cuánto se vuelve a preguntar. Preguntar más seguido no acelera nada y
+# solo suma llamadas.
+ESPERA_ENTRE_PREGUNTAS = 3
 
 
 class ErrorDeVoz(RuntimeError):
@@ -434,6 +458,95 @@ def duracion(ruta):
         return 0.0
 
 
+def creditos():
+    """Cuántos créditos quedan en la cuenta del servicio de voz.
+
+    Los créditos son limitados y no se van a recargar seguido, así que conviene
+    poder mirarlos sin gastar nada: esta consulta es gratis.
+    """
+    try:
+        r = requests.get(f"{API_TAREAS}/credits", headers=_cabeceras(), timeout=60)
+        r.raise_for_status()
+        dato = r.json()
+        valor = dato.get("credits") if isinstance(dato, dict) else None
+        return float(valor) if valor is not None else None
+    except Exception as e:
+        log(f"No se pudieron consultar los créditos ({e}).")
+        return None
+
+
+def esperar_tarea(numero, espera_max=None):
+    """Pregunta por el encargo hasta que esté listo y devuelve su ficha.
+
+    El servicio trabaja por encargos: uno pide el audio, le dan un número, y el
+    audio aparece un rato después. Acá se pregunta cada pocos segundos por ese
+    número hasta que el estado sea "done" (o "error", o se acabe la paciencia).
+
+    La ficha que devuelve trae, dentro de "metadata", el enlace del mp3 y —si
+    se pidió con transcripción— el del archivo con los tiempos por palabra.
+    """
+    espera_max = espera_max if espera_max is not None else ESPERA_MAX_TAREA
+    url = f"{API_TAREAS}/task/{numero}"
+    limite = time.time() + espera_max
+    fallos = 0
+    ultimo_aviso = 0
+
+    while True:
+        ficha = None
+        try:
+            r = requests.get(url, headers=_cabeceras(), timeout=60)
+            if r.status_code < 400:
+                ficha = r.json()
+            else:
+                fallos += 1
+                motivo = f"{r.status_code} {r.text[:150]}"
+        except Exception as e:
+            fallos += 1
+            motivo = str(e)
+
+        if ficha is not None:
+            fallos = 0
+            estado = str(ficha.get("status") or "").lower()
+            if estado == "done":
+                return ficha
+            if estado == "error":
+                raise ErrorDeVoz(
+                    "El servicio no pudo generar el audio: "
+                    + str(ficha.get("error_message") or "sin detalle")
+                )
+            # Sigue trabajando. Se avisa cada 30 s para no llenar el registro.
+            if time.time() - ultimo_aviso > 30:
+                ultimo_aviso = time.time()
+                avance = ficha.get("progress")
+                log(f"Audio en preparación{f' ({avance}%)' if avance else ''}…")
+        else:
+            # Un tropiezo suelto al preguntar no es motivo para tirar el
+            # encargo: puede estar hecho igual. Solo se abandona si falla
+            # varias veces seguidas.
+            if fallos >= 5:
+                raise ErrorDeVoz(f"No se pudo consultar el encargo: {motivo}")
+            log(f"Consulta fallida ({motivo}); se reintenta.")
+
+        if time.time() >= limite:
+            raise ErrorDeVoz(
+                f"El audio no estuvo listo en {espera_max} s (encargo {numero})."
+            )
+        time.sleep(ESPERA_ENTRE_PREGUNTAS)
+
+
+def _bajar_marcas(enlace):
+    """Se trae el archivo de tiempos por palabra, si el servicio lo dejó."""
+    if not enlace:
+        return None
+    try:
+        r = requests.get(enlace, timeout=60)
+        r.raise_for_status()
+        return _buscar_marcas(r.json())
+    except Exception as e:
+        log(f"No se pudieron leer los tiempos por palabra ({e}).")
+        return None
+
+
 def sintetizar(texto, salida, voz=None, velocidad=None, con_marcas=True,
                intentos=3):
     """Genera la voz en off y devuelve la ficha del audio.
@@ -480,11 +593,27 @@ def sintetizar(texto, salida, voz=None, velocidad=None, con_marcas=True,
     if datos is None:
         raise ErrorDeVoz(f"El servicio de voz no respondió bien: {ultimo}")
 
+    # Lo normal es que la respuesta traiga solo el número de encargo y haya que
+    # esperar a que el audio esté hecho. Si algún día el servicio devolviera el
+    # enlace de una, se aprovecha y no se espera nada.
     enlace = _buscar_url_audio(datos)
+    enlace_marcas = None
     if not enlace:
-        raise ErrorDeVoz(
-            "La respuesta no trae enlace de audio: " + json.dumps(datos)[:300]
-        )
+        numero = datos.get("task_id") or datos.get("id") if isinstance(datos, dict) else None
+        if not numero:
+            raise ErrorDeVoz(
+                "La respuesta no trae ni audio ni encargo: " + json.dumps(datos)[:300]
+            )
+        log(f"Encargo {numero} aceptado; esperando el audio.")
+        ficha_tarea = esperar_tarea(numero)
+        extra = ficha_tarea.get("metadata") or {}
+        enlace = _buscar_url_audio(extra) or _buscar_url_audio(ficha_tarea)
+        enlace_marcas = extra.get("json_url")
+        if not enlace:
+            raise ErrorDeVoz(
+                "El encargo terminó sin enlace de audio: "
+                + json.dumps(ficha_tarea)[:300]
+            )
 
     salida = Path(salida)
     salida.parent.mkdir(parents=True, exist_ok=True)
@@ -495,7 +624,13 @@ def sintetizar(texto, salida, voz=None, velocidad=None, con_marcas=True,
                 f.write(pedazo)
 
     segundos = duracion(salida)
-    marcas = _juntar_por_palabra(_buscar_marcas(datos)) if con_marcas else None
+    # Los tiempos por palabra vienen en un archivo aparte (json_url), no dentro
+    # de la respuesta. Si no se pidieron, o si no se pudieron leer, el reel sale
+    # igual: los subtítulos se reparten a ojo según lo que dura el audio.
+    marcas = None
+    if con_marcas:
+        marcas = _buscar_marcas(datos) or _bajar_marcas(enlace_marcas)
+        marcas = _juntar_por_palabra(marcas)
     marcas = _ajustar_a_duracion(marcas, segundos)
     log(
         f"Voz lista: {salida.name} ({segundos:.1f} s, "
@@ -534,6 +669,12 @@ if __name__ == "__main__":
         print(f"Familia «{familia}»: {len(voces)} voces" + (" (hay más)" if hay_mas else ""))
         for v in voces:
             print(f"  {_nombre_de(v)}  ->  {_id_de(v)}")
+        raise SystemExit(0)
+
+    # `python3 voz.py creditos` dice cuánto saldo queda. No gasta nada.
+    if len(sys.argv) > 1 and sys.argv[1] == "creditos":
+        saldo = creditos()
+        print("Créditos disponibles:", saldo if saldo is not None else "no se pudo saber")
         raise SystemExit(0)
 
     texto = sys.argv[1] if len(sys.argv) > 1 else "Probando la voz del bot."
