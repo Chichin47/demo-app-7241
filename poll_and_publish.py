@@ -17,6 +17,7 @@ si se interrumpe a mitad de camino, el peor caso es reprocesar un post
 (el estado solo se marca "processed" tras publicar con éxito).
 """
 import os
+import re
 import sys
 import json
 import time
@@ -28,6 +29,9 @@ from pathlib import Path
 import requests
 
 import cola
+import voz
+import video
+import subtitulos
 
 BASE_DIR = Path(__file__).resolve().parent
 STATE_PATH = BASE_DIR / "state" / "processed_ids.json"
@@ -289,6 +293,27 @@ Tu trabajo, dado el texto original de un post (título + diálogo) y la cantidad
 5. Si el post no tiene contenido de diálogo aprovechable (por ejemplo solo es un anuncio, o el texto \
    está vacío), responde skip=true con skip_reason.
 
+6. Además de lo anterior, prepara el material por si este post sale en formato video corto (reel). \
+   Son dos campos y SIEMPRE se llenan cuando skip=false:
+
+   a) titulo_reel: el letrero grande que va arriba del video. Máximo 45 caracteres, en mayúsculas, \
+      de dos a seis palabras, tipo gancho ("SE LE SALIÓ TODO EN VIVO"). Puede terminar con uno o dos \
+      emojis. Aquí SÍ va la censura tipo maquillaje (vocales por números, sin virgulillas), porque \
+      este texto se dibuja, no se lee en voz alta.
+
+   b) narracion: lo que dice la voz en off, de 55 a 75 palabras, sin excepción. Es un texto hablado \
+      corrido, en tercera persona, que cuenta la situación de principio a fin: engancha en la primera \
+      oración, cuenta qué pasó y cierra con una frase que invite a opinar. Reglas propias:
+      - NADA de hashtags, ni emojis, ni "Nombre:" delante de las frases, ni acotaciones entre \
+        paréntesis: todo eso se escucha mal. Si citas a alguien, dilo natural: "Fabio le respondió \
+        que para él todo es un juego".
+      - Oraciones cortas, de menos de 15 palabras, y puntuación real: la voz respira en los puntos y \
+        las comas, y de ahí salen los subtítulos.
+      - En la narración NO se usa la censura de números: se leería como galimatías. En su lugar, \
+        esquiva la palabra fuerte diciendo lo mismo de otro modo ("lo insultó", "le dijo de todo", \
+        "se le fue encima con un comentario racista"). Nunca escribas el insulto tal cual.
+      - Números y siglas escritos como se pronuncian ("veinticuatro siete", no "24/7").
+
 Responde ÚNICAMENTE llamando a la herramienta submit_edit con el JSON estructurado."""
 
 SUBMIT_TOOL = {
@@ -320,6 +345,23 @@ SUBMIT_TOOL = {
                     "los hashtags."
                 ),
             },
+            "titulo_reel": {
+                "type": "string",
+                "description": (
+                    "Letrero grande del video, máximo 45 caracteres, en mayúsculas, "
+                    "con censura de maquillaje si hace falta y uno o dos emojis "
+                    "opcionales al final."
+                ),
+            },
+            "narracion": {
+                "type": "string",
+                "description": (
+                    "Guion hablado para la voz en off: 55 a 75 palabras, prosa "
+                    "corrida en tercera persona, oraciones cortas, sin hashtags, "
+                    "sin emojis, sin nombres con dos puntos y sin palabras "
+                    "censuradas con números."
+                ),
+            },
         },
         "required": ["skip"],
     },
@@ -337,7 +379,9 @@ MANUAL_OVERRIDE = (
     "- aplicar la censura tipo maquillaje donde corresponda;\n"
     "- redactar la descripción alterna con la estructura de la regla 4: preámbulo "
     "reescrito, luego el diálogo si el texto trae diálogo, y los hashtags al final.\n"
-    "Siempre devuelve skip=false con lines y caption completos."
+    "- llenar igual titulo_reel y narracion como dice la regla 6, porque el "
+    "administrador puede pedir que este mismo post salga en video.\n"
+    "Siempre devuelve skip=false con lines, caption, titulo_reel y narracion completos."
 )
 
 
@@ -365,6 +409,95 @@ def ask_claude(original_text, num_images, manual=False):
         if block.type == "tool_use" and block.name == "submit_edit":
             return block.input
     raise RuntimeError("Claude no devolvió submit_edit")
+
+
+# ---------------------------------------------------------------------------
+# Guion del reel
+# ---------------------------------------------------------------------------
+
+# Cuánto dura como máximo la narración. El reel se corta en 30 s y hay que
+# dejarle aire al final para que la última palabra no quede pisada.
+SEGUNDOS_DE_NARRACION = 28
+
+# Lo mismo que usa el compositor de imágenes, para poder deshacer la censura de
+# maquillaje en el texto hablado: leído en voz alta, "1d10t4" no suena a nada.
+DESMAQUILLAJE = str.maketrans({"4": "a", "3": "e", "1": "i", "0": "o"})
+
+
+def _limpiar_titulo_reel(texto, respaldo=""):
+    """Deja el letrero de arriba listo para dibujar.
+
+    Recorta a lo que entra en el banner sin partir palabras, saca hashtags y
+    virgulillas, y lo pasa a mayúsculas. Los emojis se respetan: el banner los
+    dibuja aparte con la fuente de color.
+    """
+    crudo = (texto or "").strip() or (respaldo or "").strip()
+    crudo = re.sub(r"[#~]", "", crudo)
+    crudo = re.sub(r"\s+", " ", crudo).strip()
+    if not crudo:
+        return ""
+    if len(crudo) > 45:
+        recorte = crudo[:45]
+        if " " in recorte:
+            recorte = recorte[: recorte.rfind(" ")]
+        crudo = recorte.rstrip(" ,;:.-")
+    return crudo.upper()
+
+
+def _limpiar_narracion(texto, segundos=SEGUNDOS_DE_NARRACION):
+    """Deja el guion hablado listo para mandárselo a la voz.
+
+    Saca lo que no se puede leer en voz alta (hashtags, emojis, arrobas, los
+    "Nombre:" de los diálogos) y lo recorta a las palabras que entran en el
+    tiempo del reel, cortando siempre al final de una oración para que no quede
+    la frase colgada.
+    """
+    crudo = (texto or "").strip()
+    if not crudo:
+        return ""
+    crudo = video.RE_EMOJI.sub("", crudo)
+    crudo = re.sub(r"[#@]\w+", "", crudo)
+    crudo = crudo.replace("~", "")
+    # Un "Fabio:" al principio de renglón es una acotación de guion, no habla.
+    crudo = re.sub(r"(?m)^\s*[-–—]?\s*([A-ZÁÉÍÓÚÑ][\wáéíóúñ]{1,14}):\s*", r"\1 dijo: ", crudo)
+    # Palabras maquilladas. No deberían llegar aquí —el guion hablado se pide
+    # sin insultos, esquivándolos con otras palabras—, pero si se cuela una, se
+    # borra: descifrarla haría que la voz diga el insulto en voz alta, que es
+    # justo lo que la censura evita.
+    crudo = re.sub(
+        r"\b\w*[4310]\w*\b",
+        lambda m: "" if re.search(r"[a-záéíóúñ]", m.group(0), re.I) else m.group(0),
+        crudo,
+    )
+    crudo = re.sub(r"\s+([,.;:!?])", r"\1", crudo)
+    crudo = re.sub(r"\s+", " ", crudo).strip(" -–—")
+
+    tope = voz.cuanto_texto_entra(segundos)
+    palabras = crudo.split()
+    if len(palabras) <= tope:
+        return crudo
+    recorte = " ".join(palabras[:tope])
+    corte = max(recorte.rfind(". "), recorte.rfind("! "), recorte.rfind("? "))
+    if corte > len(recorte) * 0.5:
+        return recorte[: corte + 1]
+    return recorte.rstrip(" ,;:") + "."
+
+
+def guion_de_reel(edit, texto_original=""):
+    """Saca del resultado de Claude lo que necesita el reel.
+
+    Devuelve {"titulo": ..., "narracion": ...} o None si no hay con qué narrar.
+    El título tiene respaldo (la primera frase resaltada, o el arranque del post
+    original), pero la narración no: sin guion no hay reel, y en ese caso el post
+    sale como foto, que es lo que se venía haciendo.
+    """
+    lineas = [l.get("text", "") for l in (edit.get("lines") or [])]
+    respaldo = re.sub(r"^[^:]{1,16}:\s*", "", lineas[0]) if lineas else texto_original
+    titulo = _limpiar_titulo_reel(edit.get("titulo_reel"), respaldo)
+    narracion = _limpiar_narracion(edit.get("narracion"))
+    if len(narracion.split()) < 12:
+        return None
+    return {"titulo": titulo, "narracion": narracion}
 
 
 def build_compose_spec(image_paths, edit, tmpdir):
@@ -430,6 +563,165 @@ def publish_photo(image_path, caption):
     return r.json()
 
 
+def publish_reel(video_path, description):
+    """Sube el reel a la página de respaldo, en los tres pasos que pide Facebook.
+
+    1) Se avisa que empieza una subida y el servidor devuelve un video_id y una
+       dirección donde dejar el archivo.
+    2) Se manda el archivo entero a esa dirección.
+    3) Se cierra la subida diciendo que se publique, con la descripción.
+
+    Devuelve el id del reel publicado.
+    """
+    video_path = Path(video_path)
+    peso = video_path.stat().st_size
+    base = f"https://graph.facebook.com/{GRAPH_VERSION}/{PAGE_ID_BACKUP}/video_reels"
+
+    inicio = requests.post(
+        base,
+        data={"upload_phase": "start", "access_token": PAGE_TOKEN_BACKUP},
+        timeout=60,
+    )
+    inicio.raise_for_status()
+    datos = inicio.json()
+    video_id = datos.get("video_id")
+    destino = datos.get("upload_url")
+    if not video_id or not destino:
+        raise RuntimeError(f"Facebook no dio dónde subir el reel: {datos}")
+
+    with open(video_path, "rb") as f:
+        subida = requests.post(
+            destino,
+            headers={
+                "Authorization": f"OAuth {PAGE_TOKEN_BACKUP}",
+                "offset": "0",
+                "file_size": str(peso),
+                "Content-Type": "application/octet-stream",
+            },
+            data=f,
+            timeout=600,
+        )
+    subida.raise_for_status()
+    if not (subida.json() or {}).get("success", True):
+        raise RuntimeError(f"La subida del reel no terminó bien: {subida.text[:300]}")
+
+    cierre = requests.post(
+        base,
+        data={
+            "upload_phase": "finish",
+            "video_id": video_id,
+            "video_state": "PUBLISHED",
+            "description": description,
+            "access_token": PAGE_TOKEN_BACKUP,
+        },
+        timeout=120,
+    )
+    cierre.raise_for_status()
+    respuesta = cierre.json()
+    if not respuesta.get("success", True):
+        raise RuntimeError(f"Facebook rechazó publicar el reel: {respuesta}")
+    log(f"Reel subido: video_id {video_id} ({peso / 1_000_000:.1f} MB)")
+    return video_id
+
+
+# ---------------------------------------------------------------------------
+# Cuándo sale foto y cuándo sale reel
+# ---------------------------------------------------------------------------
+
+FORMATO_PATH = BASE_DIR / "state" / "formato.json"
+
+# Qué proporción de las publicaciones sale en video. 0.35 = una de cada tres,
+# más o menos. En 0 nunca hay video; en 1, siempre.
+def _proporcion_reel():
+    try:
+        valor = float(os.environ.get("REEL_RATIO", "0.35"))
+    except ValueError:
+        valor = 0.35
+    return max(0.0, min(1.0, valor))
+
+
+def _turno_de_reel():
+    """Decide si a esta publicación le toca video, repartiendo parejo.
+
+    En vez de tirar una moneda —que a veces saca cuatro videos seguidos y
+    después ninguno en todo el día— se lleva la cuenta de cuántas van y se
+    reparte de forma pareja: con 0.35, los turnos de video caen en el 3, el 6,
+    el 9… sin amontonarse.
+    """
+    proporcion = _proporcion_reel()
+    if proporcion <= 0:
+        return False
+    try:
+        estado = json.loads(FORMATO_PATH.read_text())
+    except Exception:
+        estado = {}
+    n = int(estado.get("publicadas", 0))
+    toca = int((n + 1) * proporcion) > int(n * proporcion)
+    return toca
+
+
+def _anotar_formato(formato):
+    """Suma uno a la cuenta, para que el reparto siga su curso."""
+    try:
+        estado = json.loads(FORMATO_PATH.read_text())
+    except Exception:
+        estado = {}
+    estado["publicadas"] = int(estado.get("publicadas", 0)) + 1
+    estado[formato] = int(estado.get(formato, 0)) + 1
+    estado["ultimo"] = formato
+    try:
+        FORMATO_PATH.parent.mkdir(parents=True, exist_ok=True)
+        FORMATO_PATH.write_text(json.dumps(estado, indent=2), encoding="utf-8")
+    except Exception as e:
+        log(f"No se pudo anotar el formato ({e}); sigo igual.")
+
+
+def elegir_formato(guion, cuantas_fotos, forzado=None):
+    """Devuelve "reel" o "foto", con el motivo, para dejarlo en el log.
+
+    El video necesita tres cosas: que la voz esté configurada, que Claude haya
+    escrito un guion, y que le toque el turno. Si falta cualquiera, sale foto,
+    que es lo que se venía haciendo y nunca falla.
+    """
+    if forzado in ("foto", "reel"):
+        if forzado == "reel" and not (guion and voz.hay_voz()):
+            return "foto", "se pidió video pero no hay voz o guion"
+        return forzado, "lo pidió el administrador"
+    if not cuantas_fotos:
+        return "foto", "no hay fotos"
+    if not voz.hay_voz():
+        return "foto", "falta configurar la voz (VOZ_API_KEY)"
+    if not guion:
+        return "foto", "Claude no dejó guion narrado"
+    if not _turno_de_reel():
+        return "foto", "le toca turno de foto"
+    return "reel", "le toca turno de video"
+
+
+def armar_reel(local_images, guion, tmpdir):
+    """Genera el mp4 del reel: voz, subtítulos y video. Devuelve la ruta."""
+    audio = tmpdir / "voz.mp3"
+    ficha = voz.sintetizar(guion["narracion"], audio)
+
+    subs = tmpdir / "subs.ass"
+    subtitulos.escribir_ass(
+        guion["narracion"], ficha["segundos"], subs,
+        marcas=ficha.get("marcas"),
+        margen_abajo=video.margen_subtitulos(False),
+    )
+
+    salida = tmpdir / "reel.mp4"
+    video.armar(
+        salida,
+        fotos=[str(p) for p in local_images],
+        titulo=guion["titulo"],
+        audio=str(audio),
+        subtitulos=str(subs),
+        tmpdir=str(tmpdir / "trabajo"),
+    )
+    return salida
+
+
 def process_post(post, tmpdir, allow_publish=True):
     post_id = post["id"]
     kind, images = classify_attachment(post)
@@ -473,6 +765,22 @@ def process_post(post, tmpdir, allow_publish=True):
     if not caption:
         caption = "#LCDLF6"
 
+    # El mismo post puede salir como foto o como reel. La foto ya está armada
+    # arriba y sirve igual de vista previa, así que el video se arma solo si le
+    # toca; si algo falla armándolo, se publica la foto y no se pierde el post.
+    guion = guion_de_reel(edit, text)
+    formato, motivo = elegir_formato(
+        guion, len(local_images), cola.formato_pedido(post_id)
+    )
+    log(f"Post {post_id}: sale como {formato} ({motivo}).")
+    reel_path = None
+    if formato == "reel":
+        try:
+            reel_path = armar_reel(local_images, guion, tmpdir)
+        except Exception as e:
+            log(f"No se pudo armar el reel ({e}); sale como foto.")
+            formato, reel_path = "foto", None
+
     if DRY_RUN:
         preview_dir = BASE_DIR / "dry_run_output"
         preview_dir.mkdir(exist_ok=True)
@@ -485,16 +793,36 @@ def process_post(post, tmpdir, allow_publish=True):
             + "\n".join(f"[img {l.get('image_index')}] ({l.get('color')}) {l.get('text')}"
                         for l in edit.get("lines", []))
             + f"\n\n--- DESCRIPCION ALTERNA ---\n{caption}\n"
+            + f"\n--- FORMATO ---\n{formato} ({motivo})\n"
+            + (f"\n--- TITULO DEL VIDEO ---\n{guion['titulo']}\n"
+               f"\n--- NARRACION ---\n{guion['narracion']}\n" if guion else "")
         )
         (preview_dir / f"{stub}.txt").write_text(details, encoding="utf-8")
+        if reel_path:
+            shutil.copy(reel_path, preview_dir / f"{stub}.mp4")
         log(f"[DRY_RUN] Preview guardado: {preview_img.name}. Caption: {caption}")
         send_telegram_preview(out_path, caption, details, post_id)
         return "dry_run"
+
+    if formato == "reel" and reel_path:
+        try:
+            backup_post_id = publish_reel(reel_path, caption)
+        except Exception as e:
+            log(f"Falló la publicación del reel ({e}); lo publico como foto.")
+            formato = "foto"
+            backup_post_id = None
+        if backup_post_id:
+            record_published(backup_post_id, post_id, text, caption)
+            mark_published_now("auto")
+            _anotar_formato("reel")
+            log(f"Post {post_id} -> publicado como reel {backup_post_id}")
+            return "published"
 
     result = publish_photo(out_path, caption)
     backup_post_id = result.get("post_id") or result.get("id")
     record_published(backup_post_id, post_id, text, caption)
     mark_published_now("auto")
+    _anotar_formato("foto")
     log(f"Post {post_id} -> publicado como {backup_post_id}")
     return "published"
 

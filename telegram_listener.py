@@ -488,7 +488,7 @@ def ficha_item(item, n, estado, posicion):
     return f"{cabecera}\n{linea}{cuerpo}"
 
 
-def botones_item(item, estado):
+def botones_item(item, estado, formato=None):
     clave = item.get("clave", "")
     publicable = estado in ("espera", "pausado", "prioridad")
     filas = []
@@ -501,6 +501,14 @@ def botones_item(item, estado):
         else:
             fila.append({"text": "⏸ Pausar", "callback_data": f"k|pau|{clave}"})
         filas.append(fila)
+        # Formato: el que está elegido se marca con un punto. Tocar el que ya
+        # está puesto lo suelta y el bot vuelve a decidir solo.
+        filas.append([
+            {"text": ("🔘 " if formato == "foto" else "") + "🖼 Foto",
+             "callback_data": f"k|fot|{clave}"},
+            {"text": ("🔘 " if formato == "reel" else "") + "🎬 Video",
+             "callback_data": f"k|vid|{clave}"},
+        ])
     filas.append([{"text": "🗑 Eliminar de la cola", "callback_data": f"k|del|{clave}"}])
     return {"inline_keyboard": filas}
 
@@ -603,7 +611,7 @@ def cmd_cola(chat_id):
         texto = ficha_item(item, n, estado, posicion)
         if estado in ("espera", "prioridad"):
             posicion += 1
-        markup = botones_item(item, estado)
+        markup = botones_item(item, estado, cola.formato_pedido(item.get("id")))
         res = send_photo_url(chat_id, item.get("foto") or "", texto, markup) \
             if item.get("foto") else None
         if not res:
@@ -860,11 +868,36 @@ def publish_job(job, chat_id, tmpdir):
     bot.compose_image(spec_path, out_path)
 
     final_caption = (edit.get("caption") or "").strip() or "#LCDLF6"
+
+    # Si el trabajo trae formato pedido a mano ("foto" o "reel"), manda eso; si
+    # no, se reparte igual que en el automático. Si el video falla en cualquier
+    # punto, se publica la foto: el post sale igual.
+    guion = bot.guion_de_reel(edit, text)
+    formato, motivo = bot.elegir_formato(guion, len(local_images), job.get("formato"))
+    log(f"{key}: sale como {formato} ({motivo}).")
+    if formato == "reel":
+        try:
+            reel = bot.armar_reel(local_images, guion, tmpdir)
+            backup_post_id = bot.publish_reel(reel, final_caption)
+            bot.record_published(backup_post_id, key, text, final_caption)
+            bot.mark_published_now("telegram")
+            bot._anotar_formato("reel")
+            log(f"{key} -> publicado como reel {backup_post_id}")
+            reply(
+                chat_id,
+                f"✅ Publicado como video.\nID: {backup_post_id}\n\n"
+                f"Descripción usada:\n{final_caption}",
+            )
+            return
+        except Exception as e:
+            log(f"{key}: no salió el video ({e}); lo publico como foto.")
+
     result = bot.publish_photo(out_path, final_caption)
     backup_post_id = result.get("post_id") or result.get("id")
     bot.record_published(backup_post_id, key, text, final_caption)
     # Reloj compartido: evita que el bot automático publique justo detrás.
     bot.mark_published_now("telegram")
+    bot._anotar_formato("foto")
     log(f"{key} -> publicado como {backup_post_id}")
     reply(chat_id, f"✅ Publicado en la página.\nID: {backup_post_id}\n\nDescripción usada:\n{final_caption}")
 
@@ -953,6 +986,27 @@ def handle_panel_callback(cb, partes):
         editar_ficha(chat_id, message_id, ficha_item(item, n, "espera", 0),
                      botones_item(item, "espera"))
         log(f"Panel: {pid} reanudado.")
+        return
+
+    if accion in ("fot", "vid"):
+        lista = "foto" if accion == "fot" else "video"
+        puesto = cola.formato_pedido(pid)
+        # Tocar el formato que ya estaba elegido lo suelta: vuelve a decidir el bot.
+        quitar = (puesto == "foto" and accion == "fot") or (puesto == "reel" and accion == "vid")
+        cola.marcar(pid, lista, not quitar)
+        nuevo = cola.formato_pedido(pid)
+        if nuevo == "reel":
+            aviso = "Este sale como video."
+        elif nuevo == "foto":
+            aviso = "Este sale como foto."
+        else:
+            aviso = "Listo: el bot decide el formato."
+        answer_callback(cb["id"], aviso)
+        estado_actual = "prioridad" if pid in set(cola.leer_control().get("prioridad") or []) \
+            else ("pausado" if pid in set(cola.leer_control().get("pausados") or []) else "espera")
+        editar_ficha(chat_id, message_id, ficha_item(item, n, estado_actual, 0),
+                     botones_item(item, estado_actual, nuevo))
+        log(f"Panel: {pid} -> formato {nuevo or 'automático'}.")
         return
 
     if accion == "del":

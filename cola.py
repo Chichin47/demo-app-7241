@@ -51,7 +51,9 @@ MAX_TEXTO = 400
 FRESCA_MINUTOS = 12
 
 # Las listas del archivo de control.
-LISTAS = ("pausados", "prioridad", "eliminados")
+# "video" y "foto" son el formato pedido a mano desde el panel: si un post no
+# está en ninguna de las dos, el bot decide solo cómo sale.
+LISTAS = ("pausados", "prioridad", "eliminados", "video", "foto")
 
 
 def clave(post_id):
@@ -145,7 +147,22 @@ def marcar(post_id, lista, poner=True):
         ctrl["pausados"] = sorted(set(ctrl.get("pausados") or []) - {str(post_id)})
     if poner and lista == "pausados":
         ctrl["prioridad"] = sorted(set(ctrl.get("prioridad") or []) - {str(post_id)})
+    # El formato es uno solo: pedir video suelta la marca de foto y al revés.
+    if poner and lista in ("video", "foto"):
+        otro = "foto" if lista == "video" else "video"
+        ctrl[otro] = sorted(set(ctrl.get(otro) or []) - {str(post_id)})
     return guardar_control(ctrl)
+
+
+def formato_pedido(post_id, ctrl=None):
+    """Devuelve "reel", "foto" o None según lo que se haya pedido en el panel."""
+    ctrl = ctrl if ctrl is not None else leer_control()
+    pid = str(post_id)
+    if pid in set(ctrl.get("video") or []):
+        return "reel"
+    if pid in set(ctrl.get("foto") or []):
+        return "foto"
+    return None
 
 
 def limpiar_control(vigentes):
@@ -157,7 +174,7 @@ def limpiar_control(vigentes):
     vigentes = {str(x) for x in vigentes}
     ctrl = leer_control()
     cambio = False
-    for nombre in ("pausados", "prioridad"):
+    for nombre in ("pausados", "prioridad", "video", "foto"):
         antes = set(ctrl.get(nombre) or [])
         despues = antes & vigentes
         if antes != despues:
