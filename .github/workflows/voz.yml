@@ -1,0 +1,50 @@
+name: prueba de voz
+
+# Prueba suelta, para arrancar a mano desde la pestaña Actions. NO publica
+# nada en ninguna página: solo comprueba tres cosas contra el servicio de voz,
+# que es justo lo que no se puede probar desde otro lado.
+#
+#   1. Que la clave VOZ_API_KEY sirve.
+#   2. Que la voz clonada VEXVIP está en la biblioteca y con qué identificador.
+#   3. Que el servicio devuelve un audio de verdad, que queda para escuchar.
+#
+# A propósito no lleva grupo de concurrencia: así corre al toque, en paralelo
+# con el turno del bot, sin hacer cola detrás de él ni cortarlo.
+on:
+  workflow_dispatch:
+
+jobs:
+  voz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Buscar la voz en la biblioteca
+        env:
+          VOZ_API_KEY: ${{ secrets.VOZ_API_KEY }}
+          VOZ_NOMBRE: "VEXVIP"
+        run: python voz.py voces clone
+
+      - name: Decir una frase de prueba
+        env:
+          VOZ_API_KEY: ${{ secrets.VOZ_API_KEY }}
+          VOZ_NOMBRE: "VEXVIP"
+        run: |
+          python voz.py "Esto es una prueba de la voz del bot. Si escuchas esta frase completa, el servicio responde bien y la voz clonada es la correcta. Ya se puede publicar en video." /tmp/muestra.mp3
+          ls -l /tmp/muestra.mp3
+
+      # La muestra queda colgada del resumen de la corrida, para bajarla y
+      # escucharla desde el celular o la computadora.
+      - name: Dejar la muestra para escuchar
+        uses: actions/upload-artifact@v4
+        with:
+          name: muestra-de-voz
+          path: /tmp/muestra.mp3
