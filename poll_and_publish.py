@@ -271,8 +271,16 @@ Tu trabajo, dado el texto original de un post (título + diálogo) y la cantidad
    palabras neutras.
 4. Redacta la descripción alterna del post con esta estructura, en este orden:
 
-   a) PREÁMBULO: 1-3 oraciones que cuenten la situación con palabras DISTINTAS al post original \
-      (tono enganchador), para que Facebook no lo marque como contenido duplicado.
+   a) PREÁMBULO: la reseña corta que va arriba de todo, para que el que pasa scrolleando \
+      entienda de qué va antes de leer el diálogo. Se escribe con palabras DISTINTAS al post \
+      original (tono enganchador), para que Facebook no lo marque como contenido duplicado.
+      - Si el post TRAE diálogo: UNA sola oración, de 18 a 28 palabras. Dos solo si la primera \
+        de verdad no alcanza, y aun así el preámbulo entero nunca pasa de 200 caracteres. La \
+        razón es concreta: Facebook corta la descripción con "Ver más" a las pocas líneas, y si \
+        el preámbulo se come ese espacio, el diálogo —que es lo que engancha— queda escondido. \
+        El preámbulo contextualiza; el diálogo es el que vende.
+      - Si el post NO trae diálogo: ahí el preámbulo es todo lo que hay, así que puede ir de 2 a \
+        3 oraciones y contar la historia completa.
 
    b) DIÁLOGO: si el texto original trae diálogo (líneas tipo "Nombre: frase", o con guiones, o \
       cualquier intervención hablada de un personaje), va SIEMPRE debajo del preámbulo, porque el \
@@ -360,10 +368,12 @@ SUBMIT_TOOL = {
             "caption": {
                 "type": "string",
                 "description": (
-                    "Descripción alterna completa: preámbulo reescrito, luego el diálogo "
-                    "del original (una línea por intervención, con guion y nombre, "
-                    "separadas por saltos de línea reales) si lo hubiera, y al final "
-                    "los hashtags."
+                    "Descripción alterna completa: preámbulo reescrito (una sola "
+                    "oración de 18 a 28 palabras cuando el post trae diálogo, sin "
+                    "pasar de 200 caracteres; más largo solo si no hay diálogo), "
+                    "luego el diálogo del original (una línea por intervención, con "
+                    "guion y nombre, separadas por saltos de línea reales) si lo "
+                    "hubiera, y al final los hashtags."
                 ),
             },
             "titulo_reel": {
