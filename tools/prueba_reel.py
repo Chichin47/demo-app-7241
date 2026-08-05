@@ -79,6 +79,9 @@ def foto_de_pagina_uno(destino):
     token = os.environ.get("PAGE_TOKEN_MAIN", "").strip()
     if not page_id or not token:
         return None
+    # Sin decir nada secreto: alcanza para saber si es la misma llave que usa
+    # el bot o si por acá llegó otra distinta.
+    log(f"Página 1: id termina en …{page_id[-4:]}, llave de largo {len(token)}.")
     url = f"https://graph.facebook.com/{GRAPH_VERSION}/{page_id}/posts"
     r = requests.get(
         url,
