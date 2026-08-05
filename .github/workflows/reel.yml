@@ -1,0 +1,118 @@
+name: prueba de reel
+
+# Prueba suelta, para arrancar a mano desde la pestaña Actions. NO publica
+# nada en ninguna página y NO gasta créditos de Claude: el título y el texto
+# que se narran están escritos en tools/prueba_reel.py.
+#
+# Lo que se comprueba, que es justo lo que no se puede ver desde otro lado:
+#
+#   1. Que ffmpeg queda instalado en la máquina de GitHub.
+#   2. Que la voz clonada responde y el audio se mide bien.
+#   3. Que los subtítulos karaoke se escriben y se dibujan.
+#   4. Que el video sale armado, vertical y con sonido.
+#
+# Al final el .mp4 queda colgado del resumen de la corrida, para bajarlo y
+# verlo. Eso es lo que hay que mirar: si el video se ve bien acá, se ve bien
+# cuando lo publique el bot, porque es el mismo camino.
+#
+# A propósito no lleva grupo de concurrencia: así corre al toque, en paralelo
+# con el turno del bot, sin hacer cola detrás de él ni cortarlo.
+on:
+  workflow_dispatch:
+    inputs:
+      foto:
+        description: "Dirección de una foto para la prueba (opcional)"
+        required: false
+        default: ""
+
+jobs:
+  reel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Sin esto no hay video posible: ffmpeg es el que arma el archivo y
+      # ffprobe el que mide el audio. Acá SÍ corta la prueba si falla, porque
+      # sin ffmpeg no habría nada que probar.
+      - name: Instalar ffmpeg
+        run: |
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+            echo "ffmpeg ya estaba."
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          fi
+          ffmpeg -version | head -1
+
+      # Los emojis del letrero de arriba necesitan la fuente de color. Si no
+      # se instala, el video sale igual, solo que sin emojis.
+      - name: Fuente de emojis
+        continue-on-error: true
+        run: sudo apt-get install -y -qq fonts-noto-color-emoji
+
+      # Solo para poder tomar una foto de verdad de la página 1, que se lee y
+      # nada más. Si el sobre no está, la prueba usa otra foto y sigue igual.
+      - name: Load config
+        continue-on-error: true
+        env:
+          CONFIG_B64: ${{ secrets.CONFIG_B64 }}
+        run: |
+          if [ -z "$CONFIG_B64" ]; then
+            echo "Sin sobre de configuración; la prueba usará otra foto."
+            exit 0
+          fi
+          printf '%s' "$CONFIG_B64" | base64 -d > "$RUNNER_TEMP/cfg.env"
+          while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in ''|'#'*) continue ;; esac
+            key="${line%%=*}"
+            val="${line#*=}"
+            key="$(printf '%s' "$key" | tr -d '[:space:]')"
+            [ -z "$key" ] && continue
+            [ "$key" = "$line" ] && continue
+            case "$key" in PAGE_ID_MAIN|PAGE_TOKEN_MAIN) ;; *) continue ;; esac
+            if [ "${#val}" -ge 12 ]; then
+              echo "::add-mask::$val"
+            fi
+            printf '%s=%s\n' "$key" "$val" >> "$GITHUB_ENV"
+          done < "$RUNNER_TEMP/cfg.env"
+          rm -f "$RUNNER_TEMP/cfg.env"
+          echo "Config cargada (solo lo de la página 1, para mirar una foto)."
+
+      - name: Créditos antes
+        continue-on-error: true
+        env:
+          VOZ_API_KEY: ${{ secrets.VOZ_API_KEY }}
+        run: python voz.py creditos
+
+      - name: Armar el reel de prueba
+        env:
+          VOZ_API_KEY: ${{ secrets.VOZ_API_KEY }}
+          VOZ_NOMBRE: "VEXVIP"
+          FOTO_URL: ${{ inputs.foto }}
+        run: |
+          python tools/prueba_reel.py /tmp/prueba_reel.mp4
+          ls -l /tmp/prueba_reel.mp4
+
+      - name: Créditos después
+        continue-on-error: true
+        env:
+          VOZ_API_KEY: ${{ secrets.VOZ_API_KEY }}
+        run: python voz.py creditos
+
+      # El video queda colgado del resumen de la corrida, para bajarlo y verlo
+      # desde el celular o la computadora.
+      - name: Dejar el video para verlo
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reel-de-prueba
+          path: /tmp/prueba_reel.mp4
+          if-no-files-found: warn
