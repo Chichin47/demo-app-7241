@@ -309,8 +309,13 @@ Tu trabajo, dado el texto original de un post (título + diálogo) y la cantidad
       emojis. Aquí SÍ va la censura tipo maquillaje (vocales por números, sin virgulillas), porque \
       este texto se dibuja, no se lee en voz alta.
 
-   b) narracion: lo que dice la voz en off, de 62 a 80 palabras. Usa las que necesites para \
-      que la historia entre COMPLETA; si con 65 ya cerraste, no rellenes.
+   b) narracion: lo que dice la voz en off. El largo lo decide la historia, no un objetivo de \
+      duración: usa las palabras que hagan falta para que entren la escena, todas las \
+      intervenciones y el remate, y ni una más. En la práctica lo normal son 60 a 90 palabras. \
+      El techo duro son 125, y llegar ahí tiene que ser la excepción: un post con siete u ocho \
+      intervenciones largas. Si la historia cerró en 55 palabras, el guion termina en 55 y listo. \
+      Está PROHIBIDO estirar con relleno para llenar tiempo: un video de 22 segundos que se \
+      entiende entero es mejor que uno de 45 con paja adentro.
 
       Lo más importante de todo: quien escucha el video NO ve la descripción escrita y muchas veces \
       tampoco conoce el programa. La narración tiene que bastarse sola. Al terminar de escucharla, \
@@ -397,7 +402,9 @@ SUBMIT_TOOL = {
             "narracion": {
                 "type": "string",
                 "description": (
-                    "Guion hablado para la voz en off: 62 a 80 palabras, prosa "
+                    "Guion hablado para la voz en off: normalmente 60 a 90 "
+                    "palabras y como mucho 125 (solo si la historia de verdad "
+                    "las necesita; nunca relleno para llenar tiempo), prosa "
                     "corrida en tercera persona. Tiene que contar la historia "
                     "COMPLETA y entenderse sola, sin leer la descripción: "
                     "escena, lo que se dijeron intervención por intervención en "
@@ -458,16 +465,84 @@ def ask_claude(original_text, num_images, manual=False):
 
 
 # ---------------------------------------------------------------------------
+# Freno de la reseña
+# ---------------------------------------------------------------------------
+
+# Hasta acá puede llegar el preámbulo (la reseña de arriba) cuando el post trae
+# diálogo. Doscientos caracteres es más o menos una línea y media en el celular,
+# que es justo lo que se ve antes del "Ver más" de Facebook.
+LIMITE_PREAMBULO = 200
+
+# Cómo se reconoce una línea de diálogo: empieza con guion, o con un nombre
+# seguido de dos puntos.
+RE_LINEA_DIALOGO = re.compile(
+    r"^\s*(?:[-–—]\s*\S|[A-ZÁÉÍÓÚÑ][\wáéíóúñ]{1,18}\s*:\s+\S)"
+)
+
+
+def acotar_preambulo(caption, limite=LIMITE_PREAMBULO):
+    """Corta la reseña a una línea cuando abajo hay diálogo.
+
+    Esto es un freno de mano, no la regla: la regla está escrita en el prompt y
+    casi siempre alcanza. Está acá porque el largo de la reseña es la cosa que
+    más se desmadra sola —empieza en una línea y para el post veinte ya son
+    cuatro— y una instrucción de texto no da garantía, un recorte en código sí.
+    Cada post se pide en una llamada nueva y sin memoria de las anteriores, o
+    sea que no hay forma de que la deriva se acumule, pero igual conviene tener
+    el tope acá abajo, donde no depende de que nadie interprete nada.
+
+    Solo actúa si hay diálogo debajo: sin diálogo la reseña es todo lo que hay y
+    tiene que poder ser larga. Y nunca corta a mitad de oración: si la primera
+    oración sola ya se pasa del límite, se respeta entera.
+    """
+    if not caption:
+        return caption
+    lineas = caption.split("\n")
+    corte = next(
+        (i for i, l in enumerate(lineas) if RE_LINEA_DIALOGO.match(l)), None
+    )
+    if corte is None or corte == 0:
+        return caption          # no hay diálogo, o arranca en diálogo: no toco nada
+
+    cabeza = "\n".join(lineas[:corte])
+    preambulo = cabeza.strip()
+    if len(preambulo) <= limite:
+        return caption
+
+    # Se van sumando oraciones enteras mientras entren; siempre queda una.
+    partes = re.findall(r"[^.!?]+[.!?]*\s*", preambulo) or [preambulo]
+    recorte = partes[0]
+    for parte in partes[1:]:
+        if len((recorte + parte).strip()) > limite:
+            break
+        recorte += parte
+    recorte = recorte.strip()
+    if recorte == preambulo:
+        return caption
+
+    log(
+        f"Reseña recortada: {len(preambulo)} -> {len(recorte)} caracteres "
+        f"(el tope con diálogo es {limite})."
+    )
+    return "\n".join([recorte] + lineas[corte:])
+
+
+# ---------------------------------------------------------------------------
 # Guion del reel
 # ---------------------------------------------------------------------------
 
-# Cuánto dura como máximo la narración. El video se corta en 34 s y hay que
-# dejarle aire al final para que la última palabra no quede pisada. Antes acá
-# decía 28, que daban 70 palabras: alcanzaba para casi todo, pero en los posts
-# de cinco o seis intervenciones el guion se quedaba sin lugar justo antes del
-# remate y el video terminaba sin el golpe. La duración es una referencia, no
-# una meta: primero que la historia cierre entera.
-SEGUNDOS_DE_NARRACION = 32
+# Techo de la narración, en segundos. Esto NO es a lo que apunta el guion: es
+# el corte de seguridad por si se desmadra. El orden de prioridades es al revés
+# de lo que parece —primero que entren la reseña, el diálogo y el remate; el
+# tiempo sale de ahí, no al revés—, así que este número solo tiene que ser lo
+# bastante grande para que una historia larga quepa entera.
+#
+# Historia del número: 28 daban 70 palabras y cortaban el remate; 32 daban 80 y
+# seguían apretando. Cincuenta dan 125 palabras, que a ritmo medido son unos 50
+# segundos hablados, y el video frena en 52 (video.DURACION_MAX) para dejar aire
+# después de la última palabra. Un guion normal sigue saliendo de 25 a 35
+# segundos: el techo alto no alarga los videos, solo deja de mutilar los largos.
+SEGUNDOS_DE_NARRACION = 50
 
 # Lo mismo que usa el compositor de imágenes, para poder deshacer la censura de
 # maquillaje en el texto hablado: leído en voz alta, "1d10t4" no suena a nada.
@@ -811,7 +886,7 @@ def process_post(post, tmpdir, allow_publish=True):
     out_path = tmpdir / f"{post_id}_out.jpg"
     compose_image(spec_path, out_path)
 
-    caption = edit.get("caption", "").strip()
+    caption = acotar_preambulo(edit.get("caption", "").strip())
     if not caption:
         caption = "#LCDLF6"
 

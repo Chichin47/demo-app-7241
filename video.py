@@ -76,11 +76,17 @@ def margen_subtitulos(hay_sticker=True):
     return medidas(hay_sticker)[2] + 100
 
 FPS = 30
-# Techo del reel. Treinta segundos era el número redondo, pero cortaba historias
-# justo antes del remate: mejor que el video se estire unos segundos y el chiste
-# cierre, a que dure bonito y no se entienda. Treinta y cuatro es el margen para
-# que un guion largo entre completo; casi ninguno llega hasta acá.
-DURACION_MAX = 34.0
+# Techo del reel. OJO: esto NO es la duración a la que apunta el video, es el
+# freno de mano. La duración de verdad la manda el guion, y el guion la manda la
+# historia: reseña, diálogo y remate completos. Si eso entra en 22 segundos, el
+# reel dura 22 y está bien; si necesita 45, dura 45 y también está bien.
+#
+# El número fue subiendo por una sola razón: cada vez que era chico, cortaba
+# historias justo antes del golpe (30 cortaba, 34 seguía apretando en los posts
+# de seis o siete intervenciones). Cincuenta y dos deja llegar cómodo a los
+# cincuenta segundos hablados sin que la última palabra quede pisada, y sigue
+# frenando el caso raro en que el guion se desmadre.
+DURACION_MAX = 52.0
 DURACION_MIN = 6.0
 
 # El acabado de las franjas que NO son la del centro: desenfoque fuerte, un
@@ -359,8 +365,10 @@ def plan_de_tomas(cantidad_fotos, segundos):
     """Arma la lista de tomas: qué foto y con qué movimiento va cada una.
 
     La misma foto vuelve varias veces, pero nunca con el mismo movimiento dos
-    veces seguidas. Son diez movimientos y en treinta segundos entran diez
-    tomas, así que dentro de un mismo reel no se repite ninguno.
+    veces seguidas. Son diez movimientos, o sea unos treinta segundos de video
+    antes de que la rueda vuelva a empezar; en un reel largo alguno se repite,
+    pero siempre con veinte segundos y varios cruces distintos de por medio, que
+    es tiempo de sobra para que no se note.
 
     Además, cada reel arranca por un movimiento distinto, elegido a partir de
     cuánto dura. No es al azar (el bot tiene que dar siempre el mismo resultado
