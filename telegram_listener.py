@@ -252,14 +252,15 @@ def download_telegram_photo(file_id, dest):
 BTN_COLA = "🗂 Cola"
 BTN_REVISAR = "🔎 Revisar ahora"
 BTN_ULTIMO = "📊 Último post"
+BTN_PUBLICADOS = "🎞 Publicados"
 BTN_AYUDA = "❔ Ayuda"
 BTN_REINICIAR = "🔄 Reiniciar"
 
 TECLADO_FIJO = {
     "keyboard": [
         [{"text": BTN_COLA}, {"text": BTN_REVISAR}],
-        [{"text": BTN_ULTIMO}, {"text": BTN_AYUDA}],
-        [{"text": BTN_REINICIAR}],
+        [{"text": BTN_ULTIMO}, {"text": BTN_PUBLICADOS}],
+        [{"text": BTN_AYUDA}, {"text": BTN_REINICIAR}],
     ],
     "resize_keyboard": True,
     "is_persistent": True,
@@ -277,6 +278,12 @@ TEXTO_AYUDA = (
     "pendientes, Claude, Telegram y el ritmo de publicación) y te manda el reporte "
     "acá mismo. Tarda unos segundos. No publica nada.\n\n"
     "📊 Último post — te dice qué fue lo último que publicó y hace cuánto.\n\n"
+    "🎞 Publicados — la lista de lo que ya salió en la página 2. Cada uno trae "
+    "el botón 🎬 Hacer video de este: sirve para cuando algo salió como foto y "
+    "después ves que daba para video. El video se arma de nuevo desde el post "
+    "original de la página 1 y se publica aparte, en el próximo barrido. La foto "
+    "que ya está publicada NO se toca: si querés que quede solo el video, la "
+    "borrás vos desde Facebook.\n\n"
     "🔄 Reiniciar — si algo se colgó, cierra el turno actual y arranca uno limpio. "
     "Te pregunta antes, para que no pase por accidente.\n\n"
     "📸 Para publicar algo a mano: mándame la foto con la descripción y te pregunto "
@@ -309,6 +316,8 @@ def que_comando(texto):
         return "revisar"
     if t.startswith("ultimo") or t in ("ultima", "ultima publicacion"):
         return "ultimo"
+    if t.startswith("publicados") or t in ("publicado", "historial", "salidos"):
+        return "publicados"
     if t.startswith("ayuda") or t in ("help", "comandos", "start", "menu"):
         return "ayuda"
     return None
@@ -321,6 +330,7 @@ def registrar_menu_comandos():
             {"command": "cola", "description": "Ver lo que está por publicarse"},
             {"command": "revisar", "description": "Revisar que todo esté bien"},
             {"command": "ultimo", "description": "Qué publicó último y hace cuánto"},
+            {"command": "publicados", "description": "Lo que ya salió (y pedir el video)"},
             {"command": "reiniciar", "description": "Cerrar el turno y arrancar uno limpio"},
             {"command": "ayuda", "description": "Cómo se usa el bot"},
         ]))
@@ -399,6 +409,160 @@ def cmd_ultimo(chat_id):
             + ("Ya puede publicar la siguiente." if falta <= 0 else f"La siguiente puede salir en {falta:.0f} min.")
         )
     reply(chat_id, "\n".join(partes), TECLADO_FIJO)
+    origen = info.get("source_post_id")
+    if origen:
+        reply(chat_id, "¿Querés que además haga el video de este?",
+              botones_publicado(origen, info))
+
+
+# --------------------------------------------------------------------------
+# 🎞 Publicados: pedir el video de algo que ya salió
+# --------------------------------------------------------------------------
+#
+# El formato se elige antes de publicar, desde 🗂 Cola. Esto es para después:
+# el post ya salió como foto y recién ahí ves que daba para video. El video se
+# arma de nuevo desde el original de la página 1 y se publica aparte; la foto
+# que ya está arriba no se toca.
+
+# Cuántas publicaciones se muestran. Más que esto llena el chat de fichas.
+PUBLICADOS_MAX = 8
+
+
+def leer_publicados():
+    """El registro de lo que se publicó, del más viejo al más nuevo."""
+    try:
+        if bot.PUBLISHED_MAP_PATH.exists():
+            datos = json.loads(bot.PUBLISHED_MAP_PATH.read_text(encoding="utf-8"))
+            return datos if isinstance(datos, dict) else {}
+    except Exception as e:
+        log(f"No pude leer el registro de publicaciones: {e}")
+    return {}
+
+
+def buscar_publicado(clave):
+    """Devuelve (backup_id, info) del publicado cuyo original tiene esa clave."""
+    for backup_id, info in leer_publicados().items():
+        origen = info.get("source_post_id")
+        if origen and cola.clave(origen) == clave:
+            return backup_id, info
+    return None, None
+
+
+def botones_publicado(origen, info, backup_id=""):
+    """Los botones de una ficha de publicado."""
+    clave = cola.clave(origen)
+    estado = cola.estado_video(origen)
+    filas = []
+    if estado == "pendiente":
+        filas.append([{"text": "✖️ Ya no quiero el video",
+                       "callback_data": f"v|can|{clave}"}])
+    elif info.get("formato") == "reel":
+        filas.append([{"text": "🎬 Este ya salió como video",
+                       "callback_data": f"v|yaes|{clave}"}])
+    else:
+        filas.append([{"text": "🎬 Hacer video de este",
+                       "callback_data": f"v|new|{clave}"}])
+    if backup_id:
+        filas.append([{"text": "👁 Ver la publicación",
+                       "url": f"https://www.facebook.com/{backup_id}"}])
+    return {"inline_keyboard": filas}
+
+
+def ficha_publicado(n, backup_id, info):
+    # n puede venir vacío: cuando se reescribe la ficha después de tocar un
+    # botón no sabemos en qué puesto de la lista estaba, y poner un número
+    # inventado confunde más que no poner ninguno.
+    estado = cola.estado_video(info.get("source_post_id"))
+    if info.get("formato") == "reel":
+        salio = "🎬 salió como video"
+    elif info.get("formato") == "foto":
+        salio = "🖼 salió como foto"
+    else:
+        salio = "🖼 salió como foto (registro viejo)"
+
+    cuando = info.get("when")
+    try:
+        edad = f" · {hace_cuanto(time.time() - float(cuando))}" if cuando else ""
+    except (TypeError, ValueError):
+        edad = ""
+    lineas = [(f"{n}. " if n else "") + salio + edad]
+    if estado == "pendiente":
+        lineas.append("🎬 VIDEO PEDIDO — sale en el próximo barrido, sin esperar turno.")
+    elif estado == "hecho":
+        lineas.append("✅ El video de este ya se publicó.")
+    elif estado == "error":
+        lineas.append("⚠️ Intenté el video y no salió. Podés pedirlo de nuevo.")
+
+    texto = (info.get("caption") or info.get("source_text") or "").strip()
+    lineas.append(f"\n«{texto[:400]}»" if texto else "\n(sin texto)")
+    return "\n".join(lineas)
+
+
+def cmd_publicados(chat_id):
+    """Lista lo último publicado, con el botón para encargar el video."""
+    datos = leer_publicados()
+    if not datos:
+        reply(chat_id, "Todavía no hay ninguna publicación registrada.", TECLADO_FIJO)
+        return
+
+    ultimos = list(datos.items())[-PUBLICADOS_MAX:][::-1]   # el más nuevo arriba
+    pendientes = len(cola.rehacer_pendientes())
+
+    cabecera = f"🎞 PUBLICADOS — lo último que salió en la página 2 ({len(ultimos)})."
+    if pendientes:
+        cabecera += f"\n\n🎬 Tenés {pendientes} video(s) encargado(s) esperando el próximo barrido."
+    cabecera += ("\n\nSi alguno salió como foto y querés el video, tocá 🎬 Hacer video "
+                 "de este. Lo armo de nuevo desde el post original de la página 1 y lo "
+                 "publico aparte. La foto que ya está arriba NO se toca ni se borra: "
+                 "eso lo decidís vos.")
+    reply(chat_id, cabecera, TECLADO_FIJO)
+
+    for n, (backup_id, info) in enumerate(ultimos, start=1):
+        origen = info.get("source_post_id")
+        if not origen:
+            continue
+        reply(chat_id, ficha_publicado(n, backup_id, info),
+              botones_publicado(origen, info, backup_id))
+    log(f"Panel de publicados: {len(ultimos)} ficha(s).")
+
+
+def handle_video_callback(cb, partes):
+    """Botones de 🎞 Publicados: encargar o cancelar el video de algo ya salido."""
+    chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
+    message_id = cb.get("message", {}).get("message_id")
+    accion = partes[1] if len(partes) > 1 else ""
+    clave = partes[2] if len(partes) > 2 else ""
+
+    if accion == "yaes":
+        answer_callback(cb["id"], "Este ya salió como video; no tiene sentido rehacerlo.")
+        return
+
+    backup_id, info = buscar_publicado(clave)
+    if not info:
+        answer_callback(cb["id"], "Ya no tengo el registro de esa publicación.")
+        return
+    origen = info.get("source_post_id")
+
+    if accion == "new":
+        ok, motivo = cola.pedir_video(origen, backup_id, info.get("source_text") or "")
+        if motivo == "ya":
+            answer_callback(cb["id"], "Ese video ya estaba pedido.")
+        elif ok:
+            answer_callback(cb["id"], "Listo: lo armo en el próximo barrido.")
+            log(f"Publicados: video encargado para {origen}.")
+        else:
+            answer_callback(cb["id"], "No pude anotar el encargo; probá de nuevo.")
+            return
+    elif accion == "can":
+        cola.cancelar_video(origen)
+        answer_callback(cb["id"], "Cancelado: no le hago el video.")
+        log(f"Publicados: encargo cancelado para {origen}.")
+    else:
+        answer_callback(cb["id"], "Botón no reconocido.")
+        return
+
+    editar_ficha(chat_id, message_id, ficha_publicado(None, backup_id, info),
+                 botones_publicado(origen, info, backup_id))
 
 
 def cmd_ayuda(chat_id):
@@ -682,6 +846,7 @@ def atender_comandos(mensajes):
         "cola": cmd_cola,
         "revisar": cmd_revisar,
         "ultimo": cmd_ultimo,
+        "publicados": cmd_publicados,
         "reiniciar": cmd_reiniciar,
         "ayuda": cmd_ayuda,
     }
@@ -1065,6 +1230,9 @@ def handle_callback(cb, jobs):
         return
     if accion == "rst":
         handle_reinicio_callback(cb, partes)
+        return
+    if accion == "v":
+        handle_video_callback(cb, partes)
         return
 
     key = partes[1] if len(partes) > 1 else ""

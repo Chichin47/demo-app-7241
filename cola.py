@@ -23,8 +23,17 @@ archivos, a propósito separados:
                              chat, para poder borrarlos al redibujar y que no
                              se llene la conversación de paneles viejos.
 
-Un solo escritor por archivo: así el bot y el panel nunca se pisan, aunque
-corran uno detrás del otro en el mismo ciclo.
+  state/rehacer.json         Los encargos de "hacé el video de este post que ya
+                             salió como foto". Este es el único archivo que
+                             tocan los dos: el panel apunta el encargo y el bot
+                             anota cómo le fue. Se pueden pisar porque nunca
+                             corren a la vez —runner.py los llama uno detrás
+                             del otro— y porque cada uno lee, cambia lo suyo y
+                             vuelve a escribir el archivo entero.
+
+Un solo escritor por archivo (salvo el de rehacer, recién explicado): así el
+bot y el panel nunca se pisan, aunque corran uno detrás del otro en el mismo
+ciclo.
 """
 import json
 import time
@@ -36,6 +45,7 @@ SNAPSHOT_PATH = BASE_DIR / "state" / "cola_snapshot.json"
 CONTROL_PATH = BASE_DIR / "state" / "cola_control.json"
 PANEL_PATH = BASE_DIR / "state" / "cola_panel.json"
 REINICIO_PATH = BASE_DIR / "state" / "reinicio.json"
+REHACER_PATH = BASE_DIR / "state" / "rehacer.json"
 
 # Cuántos pendientes se guardan en la foto de la cola. Más que esto no aporta:
 # a ese ritmo son horas de trabajo por delante, y el archivo de estado se sube
@@ -196,6 +206,102 @@ def soltar_eliminados(ids):
     quedan = set(ctrl.get("eliminados") or []) - ids
     ctrl["eliminados"] = sorted(quedan)
     guardar_control(ctrl)
+
+
+# --------------------------------------------------------------------------
+# Encargos de video sobre publicaciones que YA salieron
+# --------------------------------------------------------------------------
+#
+# El formato (foto o video) se elige antes de publicar, desde el panel de la
+# cola. Pero a veces el post ya salió como foto y recién ahí se ve que daba
+# para video. Esto es para eso: pedir el video de algo ya publicado.
+#
+# El video nuevo se arma desde el post ORIGINAL de la página 1 (misma foto,
+# mismo texto), no desde lo que se publicó. Y se publica aparte: la foto que ya
+# está en la página 2 no se toca ni se borra, porque borrar es cosa tuya.
+
+# Cuántos encargos se guardan. Pasado esto se van cayendo los más viejos ya
+# atendidos: el archivo de estado viaja al repositorio en cada ciclo.
+MAX_REHACER = 20
+
+
+def leer_rehacer():
+    dato = _leer(REHACER_PATH, {})
+    pedidos = dato.get("pedidos")
+    return list(pedidos) if isinstance(pedidos, list) else []
+
+
+def _guardar_rehacer(pedidos):
+    # Se conservan todos los pendientes y, de los ya atendidos, solo los
+    # últimos: son los que el panel muestra como "ya está hecho".
+    pendientes = [p for p in pedidos if p.get("estado") == "pendiente"]
+    resto = [p for p in pedidos if p.get("estado") != "pendiente"]
+    resto = resto[-max(0, MAX_REHACER - len(pendientes)):] if resto else []
+    return _escribir(REHACER_PATH, {"pedidos": pendientes + resto})
+
+
+def pedir_video(source_post_id, publicado="", texto=""):
+    """Apunta el encargo. Si ya estaba pedido y sin atender, no duplica."""
+    pid = str(source_post_id)
+    pedidos = leer_rehacer()
+    for p in pedidos:
+        if str(p.get("source")) == pid and p.get("estado") == "pendiente":
+            return False, "ya"
+    pedidos = [p for p in pedidos if str(p.get("source")) != pid]
+    pedidos.append({
+        "source": pid,
+        "publicado": str(publicado or ""),
+        "texto": (texto or "")[:MAX_TEXTO],
+        "pedido": time.time(),
+        "estado": "pendiente",
+        "detalle": "",
+        "resultado": "",
+    })
+    return _guardar_rehacer(pedidos), "nuevo"
+
+
+def cancelar_video(source_post_id):
+    """Saca un encargo que todavía no se atendió."""
+    pid = str(source_post_id)
+    pedidos = leer_rehacer()
+    quedan = [p for p in pedidos
+              if not (str(p.get("source")) == pid and p.get("estado") == "pendiente")]
+    if len(quedan) == len(pedidos):
+        return False
+    return _guardar_rehacer(quedan)
+
+
+def rehacer_pendientes():
+    """Los encargos sin atender, del más viejo al más nuevo."""
+    pendientes = [p for p in leer_rehacer() if p.get("estado") == "pendiente"]
+    pendientes.sort(key=lambda p: p.get("pedido") or 0)
+    return pendientes
+
+
+def estado_video(source_post_id):
+    """Cómo quedó el encargo de este post: 'pendiente', 'hecho', 'error' o None."""
+    pid = str(source_post_id)
+    for p in reversed(leer_rehacer()):
+        if str(p.get("source")) == pid:
+            return p.get("estado")
+    return None
+
+
+def cerrar_video(source_post_id, estado, detalle="", resultado=""):
+    """Lo anota el bot cuando termina de atender un encargo."""
+    pid = str(source_post_id)
+    pedidos = leer_rehacer()
+    tocado = False
+    for p in pedidos:
+        if str(p.get("source")) == pid and p.get("estado") == "pendiente":
+            p["estado"] = estado
+            p["detalle"] = str(detalle)[:300]
+            p["resultado"] = str(resultado or "")
+            p["cerrado"] = time.time()
+            tocado = True
+    if not tocado:
+        return False
+    return _guardar_rehacer(pedidos)
 
 
 # --------------------------------------------------------------------------

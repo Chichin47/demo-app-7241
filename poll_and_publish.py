@@ -937,7 +937,7 @@ def process_post(post, tmpdir, allow_publish=True):
             formato = "foto"
             backup_post_id = None
         if backup_post_id:
-            record_published(backup_post_id, post_id, text, caption)
+            record_published(backup_post_id, post_id, text, caption, "reel")
             mark_published_now("auto")
             _anotar_formato("reel")
             log(f"Post {post_id} -> publicado como reel {backup_post_id}")
@@ -945,14 +945,118 @@ def process_post(post, tmpdir, allow_publish=True):
 
     result = publish_photo(out_path, caption)
     backup_post_id = result.get("post_id") or result.get("id")
-    record_published(backup_post_id, post_id, text, caption)
+    record_published(backup_post_id, post_id, text, caption, "foto")
     mark_published_now("auto")
     _anotar_formato("foto")
     log(f"Post {post_id} -> publicado como {backup_post_id}")
     return "published"
 
 
-def record_published(backup_post_id, source_post_id, source_text, caption):
+# ---------------------------------------------------------------------------
+# Videos encargados sobre publicaciones que ya salieron
+# ---------------------------------------------------------------------------
+
+# Cuántos encargos se atienden por corrida. Uno: armar un reel se lleva un par
+# de minutos y una llamada a Claude, y si se pidieron tres de golpe es mejor
+# que salgan de a uno y espaciados que tres videos seguidos en la página 2.
+MAX_REHACER_POR_CICLO = 1
+
+
+def traer_post(post_id):
+    """Vuelve a pedirle a Facebook un post de la página 1 por su identificador.
+
+    Hace falta porque el encargo puede llegar días después: para entonces el
+    post ya no viene en el barrido normal, que solo mira los recientes.
+    """
+    campos = ("id,message,created_time,attachments{media_type,type,url,media,"
+              "subattachments{media,type,url}}")
+    return graph_get(post_id, PAGE_TOKEN_MAIN, fields=campos)
+
+
+def rehacer_como_video(pedido, tmpdir):
+    """Arma y publica el video de un post que ya había salido como foto.
+
+    Se rehace desde el ORIGINAL de la página 1 —misma foto, mismo texto—, no
+    desde lo que se publicó, así el video sale igual que si le hubiera tocado
+    video desde el principio. Lo que ya está publicado en la página 2 no se
+    toca: si querés que quede solo el video, la foto la borrás vos.
+
+    Devuelve (ok, detalle). El detalle es lo que se le muestra en el chat.
+    """
+    pid = str(pedido.get("source") or "")
+    if not pid:
+        return False, "el encargo no traía identificador"
+
+    post = traer_post(pid)
+    kind, images = classify_attachment(post)
+    if kind != "photo" or not images:
+        return False, "el post original ya no tiene fotos que se puedan usar"
+    text = (post.get("message") or "").strip()
+    if not text:
+        return False, "el post original no tiene texto para narrar"
+
+    local_images = []
+    for i, url in enumerate(images):
+        dest = tmpdir / f"rehacer_{i}.jpg"
+        download_image(url, dest)
+        local_images.append(dest)
+
+    edit = ask_claude(text, len(local_images))
+    if edit.get("skip"):
+        return False, f"Claude prefirió no tocarlo ({edit.get('skip_reason')})"
+
+    guion = guion_de_reel(edit, text)
+    if not guion:
+        return False, "no salió guion para narrar, así que no hay video"
+
+    caption = acotar_preambulo((edit.get("caption") or "").strip()) or "#LCDLF6"
+    reel_path = armar_reel(local_images, guion, tmpdir)
+
+    if DRY_RUN:
+        log(f"[DRY_RUN] Reel encargado listo para {pid}, no se publica.")
+        return True, "listo (modo de prueba: no se publicó)"
+
+    nuevo = publish_reel(reel_path, caption)
+    if not nuevo:
+        return False, "Facebook no devolvió el identificador del video"
+    record_published(nuevo, pid, text, caption, "reel")
+    mark_published_now("rehacer")
+    # Cuenta para el reparto de uno de cada tres aunque lo hayas pedido a mano:
+    # es un video más que la gente ve en la página. Si pedís tres seguidos, el
+    # reparto lo compensa solo con fotos y la página no se llena de video.
+    _anotar_formato("reel")
+    log(f"Encargo: {pid} -> publicado como reel {nuevo}")
+    return True, f"https://www.facebook.com/{nuevo}"
+
+
+def atender_encargos(limite=MAX_REHACER_POR_CICLO):
+    """Atiende los videos encargados desde el chat. Devuelve cuántos publicó."""
+    pendientes = cola.rehacer_pendientes()
+    if not pendientes:
+        return 0
+    log(f"Hay {len(pendientes)} video(s) encargado(s) desde el chat.")
+    hechos = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for pedido in pendientes[:limite]:
+            pid = pedido.get("source")
+            try:
+                ok, detalle = rehacer_como_video(pedido, Path(tmp))
+            except Exception as e:
+                ok, detalle = False, str(e)[:200]
+            if ok:
+                cola.cerrar_video(pid, "hecho", detalle, detalle)
+                hechos += 1
+            else:
+                # Se cierra igual en vez de reintentar para siempre: si el
+                # motivo es que el post ya no sirve, reintentar no lo arregla
+                # y cada intento cuesta una llamada a Claude.
+                cola.cerrar_video(pid, "error", detalle)
+                log(f"Encargo {pid}: no se pudo ({detalle}).")
+    return hechos
+
+
+def record_published(backup_post_id, source_post_id, source_text, caption,
+                     formato="foto"):
     """Guarda el mapeo post-de-CAM1 -> post-original, para poder regenerar luego."""
     try:
         data = {}
@@ -962,6 +1066,10 @@ def record_published(backup_post_id, source_post_id, source_text, caption):
             "source_post_id": source_post_id,
             "source_text": source_text,
             "caption": caption,
+            # Cómo salió. Sirve para que el panel sepa a cuáles ofrecerles el
+            # botón de "hacé el video": a los que ya salieron como video, no.
+            # Los registros viejos no lo tienen y se toman como desconocidos.
+            "formato": formato,
             "ts": os.environ.get("GITHUB_RUN_ID", ""),
             # Hora real de publicación, para poder decir "hace cuánto" en el chat.
             "when": time.time(),
@@ -1064,6 +1172,16 @@ def main():
     # El control se poda con lo que sigue pendiente, para que no se acumulen
     # identificadores de posts que ya salieron.
     cola.limpiar_control(p["id"] for p in pendientes)
+
+    # Los videos encargados a mano van antes que la cola: los pediste vos, no
+    # tienen que esperar turno. Va acá y no más arriba a propósito, para que la
+    # foto de la cola quede guardada aunque el encargo falle. Si se publica uno,
+    # el reloj de publicación se mueve y el post de la cola se difiere solo
+    # hasta la próxima corrida: no salen dos seguidos.
+    try:
+        atender_encargos()
+    except Exception as e:
+        log(f"No se pudieron atender los videos encargados: {e}")
 
     # Pausados: siguen en la cola y a la vista, pero no ocupan turno.
     congelados = [p for p in pendientes if p["id"] in pausados]
