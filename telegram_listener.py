@@ -1102,6 +1102,9 @@ def publish_job(job, chat_id, tmpdir):
             bot.record_published(backup_post_id, key, text, final_caption)
             bot.mark_published_now("telegram")
             bot._anotar_formato("reel")
+            # Los envíos a mano también corren la rueda de arranques: si no, un
+            # video tuyo y uno automático podrían abrir igual.
+            bot._anotar_arranque(guion.get("narracion") if guion else "")
             log(f"{key} -> publicado como reel {backup_post_id}")
             reply(
                 chat_id,

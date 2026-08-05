@@ -324,8 +324,13 @@ Tu trabajo, dado el texto original de un post (título + diálogo) y la cantidad
       preguntando "¿de qué están hablando?", el guion está mal hecho.
 
       Cómo se arma, en este orden:
-      - ARRANQUE (1 oración): planta la escena con datos reales del post. Quiénes son y dónde están. \
-        No arranques con una frase de gancho vacía.
+      - ARRANQUE (1 oración, a veces 2): es lo que decide si alguien se queda mirando, así que \
+        no puede sonar igual en todos los videos. Al final del pedido te digo con qué forma abrir \
+        este en concreto (la escena, la acción, un detalle, una frase, la reacción o el contraste) \
+        y con qué aperturas ya se usaron, para que no repitas. Sea cual sea la forma: la primera \
+        oración lleva un dato concreto de ESTE post —nunca un gancho vacío que serviría para \
+        cualquiera— y como muy tarde en la segunda oración ya quedó claro quiénes son y dónde \
+        están. Lo que cambia es el orden en que entra el contexto, no que el contexto desaparezca.
       - CUERPO (el grueso): cuenta lo que pasó siguiendo el diálogo original, intervención por \
         intervención y en el mismo orden, pasado a habla natural: "Aldo le reclamó que ya no lo \
         aguantaba, y Fabio le contestó que para él todo era un juego". No te saltes intervenciones \
@@ -438,6 +443,131 @@ MANUAL_OVERRIDE = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Cómo arranca la narración
+# ---------------------------------------------------------------------------
+
+# Cada post se le pide a Claude en una llamada nueva y sin memoria de las
+# anteriores. Eso es bueno para que la reseña no se vaya estirando sola, pero
+# tiene un costo: sin nada que lo empuje, Claude arranca siempre igual, y todos
+# los videos terminaban abriendo con "En la casa de los famosos México...". Los
+# primeros tres segundos son los que deciden si alguien se queda mirando, así
+# que arrancar los diez videos con la misma frase es tirar esos tres segundos.
+#
+# La solución es de este lado: se lleva la cuenta de los videos publicados y a
+# cada uno le toca una forma distinta de abrir, más las últimas aperturas que ya
+# se usaron para que no repita ni la idea. La escena NO desaparece: lo que
+# cambia es el orden, el contexto pasa a la segunda oración.
+ARRANQUES_PATH = BASE_DIR / "state" / "arranques.json"
+
+MAX_ARRANQUES_RECIENTES = 6
+
+MODOS_ARRANQUE = [
+    ("escena",
+     "Abrí plantando la escena: quiénes están y dónde, con datos del post. "
+     "Es la apertura más directa; usala tal cual."),
+    ("accion",
+     "Abrí con la ACCIÓN concreta que desató todo: lo que alguien hizo, no "
+     "dónde estaban. El lugar y los nombres entran en la segunda oración."),
+    ("detalle",
+     "Abrí con el DETALLE concreto de la escena: el objeto, la comida, la "
+     "prueba, el cuarto, lo que se ve en la foto. Recién después contás "
+     "quiénes son y dónde están."),
+    ("frase",
+     "Abrí con algo que alguien DIJO, contado natural y sin comillas. Tiene "
+     "que ser una intervención del medio, nunca la del remate: si abrís con "
+     "el remate, el video ya no tiene final."),
+    ("reaccion",
+     "Abrí con la REACCIÓN: cómo quedaron los demás, quién se quedó callado, "
+     "quién se rió. Después explicás qué la provocó."),
+    ("contraste",
+     "Abrí con el CONTRASTE de la situación: lo que se suponía que pasaba "
+     "contra lo que terminó pasando, siempre con datos reales del post."),
+]
+
+REGLAS_ARRANQUE = (
+    "Reglas del arranque, valen para cualquiera de las formas:\n"
+    "- La primera oración tiene que llevar un dato concreto de ESTE post. Está "
+    "prohibido abrir con una frase que serviría para cualquier otro "
+    "(\"nadie se lo esperaba\", \"esto se salió de control\", \"lo que pasó te va "
+    "a sorprender\"): son palabras vacías que gastan los segundos que más valen.\n"
+    "- Como muy tarde en la segunda oración tiene que quedar claro quiénes son y "
+    "dónde están. El que escucha no conoce el programa. Lo que cambia es el "
+    "ORDEN, el contexto no se elimina nunca.\n"
+    "- El arranque no adelanta el remate. El final se cuenta al final."
+)
+
+
+def _leer_arranques():
+    try:
+        datos = json.loads(ARRANQUES_PATH.read_text(encoding="utf-8"))
+        if isinstance(datos, dict):
+            return datos
+    except Exception:
+        pass
+    return {}
+
+
+def _primera_oracion(texto):
+    """La apertura de un guion: hasta el primer punto, sin pasarse de 120."""
+    limpio = " ".join((texto or "").split())
+    if not limpio:
+        return ""
+    corte = limpio.find(". ")
+    if corte > 0:
+        limpio = limpio[:corte + 1]
+    return limpio[:120]
+
+
+def instruccion_arranque():
+    """El bloque que se le suma al pedido para que no abra siempre igual.
+
+    Se apoya en la cuenta de videos publicados, no en la de posts: los posts que
+    salen como foto no se escuchan, así que no gastan turno. Si el archivo no
+    existe todavía —primer video— toca el modo escena, que es exactamente lo que
+    se venía haciendo.
+    """
+    datos = _leer_arranques()
+    n = int(datos.get("n", 0) or 0)
+    nombre, indicacion = MODOS_ARRANQUE[n % len(MODOS_ARRANQUE)]
+
+    partes = [
+        "\n\nCÓMO ABRIR LA NARRACIÓN EN ESTE POST\n"
+        f"Forma que te toca: {nombre}. {indicacion}\n" + REGLAS_ARRANQUE
+    ]
+    recientes = [a for a in (datos.get("recientes") or []) if a][:MAX_ARRANQUES_RECIENTES]
+    if recientes:
+        lista = "\n".join(f"  · {a}" for a in recientes)
+        partes.append(
+            "\nAsí abrieron los últimos videos. No repitas ninguna, ni la frase "
+            "ni la idea, ni empieces con las mismas palabras:\n" + lista
+        )
+    return "".join(partes)
+
+
+def _anotar_arranque(narracion):
+    """Guarda cómo abrió este video y pasa el turno al modo siguiente.
+
+    Se llama solo cuando el video se publicó de verdad. Si se llamara en cada
+    post, los que salen como foto irían corriendo la rueda sin que nadie los
+    escuche, y la variedad que se ve en la página sería menos de la que dice la
+    cuenta.
+    """
+    datos = _leer_arranques()
+    datos["n"] = int(datos.get("n", 0) or 0) + 1
+    apertura = _primera_oracion(narracion)
+    if apertura:
+        recientes = [a for a in (datos.get("recientes") or []) if a and a != apertura]
+        datos["recientes"] = ([apertura] + recientes)[:MAX_ARRANQUES_RECIENTES]
+    datos["ultimo_modo"] = MODOS_ARRANQUE[(datos["n"] - 1) % len(MODOS_ARRANQUE)][0]
+    try:
+        ARRANQUES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ARRANQUES_PATH.write_text(json.dumps(datos, indent=2, ensure_ascii=False),
+                                  encoding="utf-8")
+    except Exception as e:
+        log(f"No se pudo anotar el arranque ({e}); sigo igual.")
+
+
 def ask_claude(original_text, num_images, manual=False):
     import anthropic
 
@@ -449,6 +579,12 @@ def ask_claude(original_text, num_images, manual=False):
     )
     if manual:
         user_msg += MANUAL_OVERRIDE
+    # Va en el mensaje y no en el prompt de sistema porque cambia post a post:
+    # es lo único de todo el pedido que depende de lo que ya se publicó antes.
+    try:
+        user_msg += instruccion_arranque()
+    except Exception as e:
+        log(f"No se pudo armar la indicación de arranque ({e}); sigo con la de siempre.")
     model = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5")
     resp = client.messages.create(
         model=model,
@@ -940,6 +1076,8 @@ def process_post(post, tmpdir, allow_publish=True):
             record_published(backup_post_id, post_id, text, caption, "reel")
             mark_published_now("auto")
             _anotar_formato("reel")
+            # Solo cuando el video salió de verdad: así el próximo abre distinto.
+            _anotar_arranque(guion.get("narracion") if guion else "")
             log(f"Post {post_id} -> publicado como reel {backup_post_id}")
             return "published"
 
@@ -1025,6 +1163,7 @@ def rehacer_como_video(pedido, tmpdir):
     # es un video más que la gente ve en la página. Si pedís tres seguidos, el
     # reparto lo compensa solo con fotos y la página no se llena de video.
     _anotar_formato("reel")
+    _anotar_arranque(guion.get("narracion"))
     log(f"Encargo: {pid} -> publicado como reel {nuevo}")
     return True, f"https://www.facebook.com/{nuevo}"
 
