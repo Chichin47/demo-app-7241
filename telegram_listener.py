@@ -273,6 +273,8 @@ TEXTO_AYUDA = (
     "   🚀 Publicar ahora — se salta la fila y sale en el próximo barrido.\n"
     "   ⏸ Pausar — se queda congelado sin salir, y los demás siguen normal.\n"
     "   🗑 Eliminar — no se publica nunca (el post sigue intacto en la página 1).\n"
+    "   🖼 Foto / 🎬 Video — obliga a que ese salga en ese formato. Tocando el que "
+    "ya está puesto lo sueltas y vuelve a decidir el bot.\n"
     "Si no tocas nada, todo sigue saliendo solo con su ritmo de siempre.\n\n"
     "🔎 Revisar ahora — revisa todo de punta a punta (las dos páginas, los posts "
     "pendientes, Claude, Telegram y el ritmo de publicación) y te manda el reporte "
@@ -287,7 +289,11 @@ TEXTO_AYUDA = (
     "🔄 Reiniciar — si algo se colgó, cierra el turno actual y arranca uno limpio. "
     "Te pregunta antes, para que no pase por accidente.\n\n"
     "📸 Para publicar algo a mano: mándame la foto con la descripción y te pregunto "
-    "a qué hora la publico.\n\n"
+    "cómo la publico y a qué hora. Arriba de las horas tenés 🤖 Automático / "
+    "🖼 Foto / 🎬 Video: elegí primero el formato y después la hora, porque tocar "
+    "una hora cierra el menú. Igual, mientras no haya salido podés cambiarle el "
+    "formato o la hora desde el mismo mensaje. Si no elegís nada queda en "
+    "🤖 Automático, que es el reparto de siempre: uno de cada tres sale en video.\n\n"
     "El bot trabaja solo: barre la página 1 cada 3 minutos y publica de a uno, con "
     "al menos {min:.0f} minutos entre publicaciones. Por eso el panel puede estar "
     "hasta 3 minutos atrasado: con 🔄 Actualizar lo refrescas."
@@ -872,12 +878,40 @@ def atender_comandos(mensajes):
 # Menús
 # --------------------------------------------------------------------------
 
-def menu_rapido(key):
+# Cómo puede salir un envío hecho a mano. El valor vacío es "no elegí nada",
+# que es lo de siempre: el bot reparte uno de cada tres en video.
+FORMATOS_MANUAL = [
+    ("🤖 Automático", ""),
+    ("🖼 Foto", "foto"),
+    ("🎬 Video", "reel"),
+]
+
+
+def etiqueta_formato(formato):
+    if formato == "reel":
+        return "🎬 Va a salir como video."
+    if formato == "foto":
+        return "🖼 Va a salir como foto."
+    return "🤖 El formato lo elige el bot (uno de cada tres sale en video)."
+
+
+def fila_formato(key, elegido=""):
+    """Los tres botones de formato, con un ✅ en el que está puesto."""
+    return [
+        {"text": ("✅ " if (elegido or "") == valor else "") + etiqueta,
+         "callback_data": f"fmt|{key}|{valor}"}
+        for etiqueta, valor in FORMATOS_MANUAL
+    ]
+
+
+def menu_rapido(key, formato=""):
     botones = [
         {"text": etiqueta, "callback_data": f"q|{key}|{mins}"}
         for etiqueta, mins in QUICK_DELAYS
     ]
-    filas = [botones[0:3], botones[3:6], botones[6:]]
+    # El formato va arriba de las horas a propósito: primero decidís QUÉ sale y
+    # después CUÁNDO, porque tocar una hora cierra el menú.
+    filas = [fila_formato(key, formato), botones[0:3], botones[3:6], botones[6:]]
     filas[-1].append({"text": "📅 Más", "callback_data": f"more|{key}"})
     filas.append([{"text": "❌ Cancelar", "callback_data": f"cancel|{key}"}])
     return {"inline_keyboard": filas}
@@ -929,14 +963,35 @@ def fecha_desde_md(md):
     return hoy
 
 
-def texto_pendiente(job):
+def _cabeza_envio(job):
     n = len(job.get("photos", []))
     resumen = (job.get("caption") or "")[:120]
     return (
         f"📸 Recibí {n} foto{'s' if n != 1 else ''} con esta descripción:\n\n"
         f"«{resumen}»\n\n"
-        f"¿Cuándo la publico? (hora {TZ_LABEL})"
+        f"{etiqueta_formato(job.get('formato'))}\n\n"
     )
+
+
+def texto_pendiente(job):
+    return _cabeza_envio(job) + f"¿Cuándo la publico? (hora {TZ_LABEL})"
+
+
+def texto_agendado(job):
+    """Lo que se ve cuando ya elegiste la hora pero todavía no salió."""
+    return _cabeza_envio(job) + (
+        f"🗓 Sale el {fmt_local(job.get('publish_at', 0))} ({TZ_LABEL})."
+    )
+
+
+def menu_agendado(job):
+    """Hasta que salga se puede cambiar el formato, la hora, o cancelarla."""
+    key = job["key"]
+    return {"inline_keyboard": [
+        fila_formato(key, job.get("formato")),
+        [{"text": "🕐 Cambiar la hora", "callback_data": f"back|{key}"},
+         {"text": "❌ Cancelar", "callback_data": f"cancel|{key}"}],
+    ]}
 
 
 # --------------------------------------------------------------------------
@@ -1056,6 +1111,7 @@ def publish_job(job, chat_id, tmpdir):
             return
         except Exception as e:
             log(f"{key}: no salió el video ({e}); lo publico como foto.")
+            motivo = f"falló el armado del video ({e})"
 
     result = bot.publish_photo(out_path, final_caption)
     backup_post_id = result.get("post_id") or result.get("id")
@@ -1064,7 +1120,14 @@ def publish_job(job, chat_id, tmpdir):
     bot.mark_published_now("telegram")
     bot._anotar_formato("foto")
     log(f"{key} -> publicado como {backup_post_id}")
-    reply(chat_id, f"✅ Publicado en la página.\nID: {backup_post_id}\n\nDescripción usada:\n{final_caption}")
+    # Si pediste video y salió foto, hay que decirlo: si no, parece que el botón
+    # no hizo nada. La foto se publica igual, nunca se pierde el post.
+    aclaracion = ""
+    if job.get("formato") == "reel":
+        aclaracion = f"\n\n⚠️ Pediste video pero salió como foto: {motivo}."
+    reply(chat_id,
+          f"✅ Publicado en la página.\nID: {backup_post_id}"
+          f"{aclaracion}\n\nDescripción usada:\n{final_caption}")
 
 
 def publicar_pendientes(jobs, tmpdir):
@@ -1251,9 +1314,32 @@ def handle_callback(cb, jobs):
         log(f"{key}: cancelada por el usuario.")
         return
 
+    if accion == "fmt":
+        valor = partes[2] if len(partes) > 2 else ""
+        # Tocar el formato que ya estaba puesto lo suelta: vuelve a decidir el bot.
+        if valor and job.get("formato") == valor:
+            valor = ""
+        job["formato"] = valor
+        if valor == "reel":
+            aviso = "Esta sale como video."
+        elif valor == "foto":
+            aviso = "Esta sale como foto."
+        else:
+            aviso = "Listo: el bot decide el formato."
+        answer_callback(cb["id"], aviso)
+        # Si ya tenía hora se redibuja la ficha de agendada, no el menú de horas:
+        # cambiar el formato no debe borrarte la hora que ya elegiste.
+        if job.get("status") == "scheduled":
+            edit_message(chat_id, message_id, texto_agendado(job), menu_agendado(job))
+        else:
+            edit_message(chat_id, message_id, texto_pendiente(job), menu_rapido(key, valor))
+        log(f"{key}: formato pedido a mano -> {valor or 'automático'}.")
+        return
+
     if accion == "back":
         answer_callback(cb["id"])
-        edit_message(chat_id, message_id, texto_pendiente(job), menu_rapido(key))
+        edit_message(chat_id, message_id, texto_pendiente(job),
+                     menu_rapido(key, job.get("formato")))
         return
 
     if accion == "more":
@@ -1281,8 +1367,7 @@ def handle_callback(cb, jobs):
         job["publish_at"] = cuando.timestamp()
         job["status"] = "scheduled"
         answer_callback(cb["id"], "Agendada.")
-        edit_message(chat_id, message_id,
-                     f"🗓 Agendada para el {fmt_local(job['publish_at'])} ({TZ_LABEL}).")
+        edit_message(chat_id, message_id, texto_agendado(job), menu_agendado(job))
         log(f"{key}: agendada para {fmt_local(job['publish_at'])}.")
         return
 
@@ -1292,11 +1377,13 @@ def handle_callback(cb, jobs):
         job["status"] = "scheduled"
         answer_callback(cb["id"], "Listo.")
         if mins == 0:
-            edit_message(chat_id, message_id, "🚀 Publicando ahora mismo…")
-            log(f"{key}: publicar ahora.")
-        else:
+            # Sale en esta misma pasada: ya no tiene sentido dejar botones para
+            # cambiarle nada, porque para cuando los toques ya se publicó.
             edit_message(chat_id, message_id,
-                         f"⏱ Agendada en {mins} min → {fmt_local(job['publish_at'])} ({TZ_LABEL}).")
+                         "🚀 Publicando ahora mismo…\n\n" + etiqueta_formato(job.get("formato")))
+            log(f"{key}: publicar ahora ({job.get('formato') or 'automático'}).")
+        else:
+            edit_message(chat_id, message_id, texto_agendado(job), menu_agendado(job))
             log(f"{key}: agendada en {mins} min ({fmt_local(job['publish_at'])}).")
         return
 
@@ -1394,6 +1481,9 @@ def main():
             "status": "awaiting",
             "publish_at": 0,
             "created_at": time.time(),
+            # Vacío = como siempre: el bot reparte uno de cada tres en video.
+            # Se llena si tocás 🖼 Foto o 🎬 Video en el menú.
+            "formato": "",
         }
         jobs.append(job)
         res = reply(TELEGRAM_CHAT_ID, texto_pendiente(job), menu_rapido(job["key"]))
