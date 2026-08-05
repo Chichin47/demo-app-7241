@@ -83,18 +83,30 @@ def foto_de_pagina_uno(destino):
     r = requests.get(
         url,
         params={
-            "fields": "attachments{media_type,media,subattachments}",
+            # Los mismos campos que pide el bot. Ojo: `subattachments` tiene que
+            # ir con sus subcampos entre llaves; pedirlo pelado da error 400.
+            "fields": "id,attachments{media_type,type,media,subattachments{media,type}}",
             "limit": 15,
             "access_token": token,
         },
         timeout=60,
     )
+    if r.status_code >= 400:
+        log(f"Graph contestó {r.status_code}: {(r.text or '')[:300]}")
     r.raise_for_status()
     for post in r.json().get("data", []):
-        for adj in (post.get("attachments") or {}).get("data", []):
-            if (adj.get("media_type") or "").lower() != "photo":
-                continue
-            src = ((adj.get("media") or {}).get("image") or {}).get("src")
+        adjuntos = (post.get("attachments") or {}).get("data", [])
+        if not adjuntos:
+            continue
+        a0 = adjuntos[0]
+        tipo = (a0.get("media_type") or a0.get("type") or "").lower()
+        # Igual que el bot: los posts que allá son video se saltan enteros.
+        if tipo in ("video", "video_inline", "video_autoplay", "reel"):
+            continue
+        subs = (a0.get("subattachments") or {}).get("data", [])
+        candidatos = subs or [a0]
+        for c in candidatos:
+            src = ((c.get("media") or {}).get("image") or {}).get("src")
             if src:
                 return _bajar(src, destino)
     return None
