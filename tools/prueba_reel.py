@@ -49,10 +49,16 @@ TITULO = os.environ.get(
 )
 NARRACION = os.environ.get(
     "PRUEBA_NARRACION",
-    "Lo que empezó como una conversación tranquila terminó en la discusión más "
-    "fuerte de la semana. Nadie se quedó callado y las cámaras lo grabaron todo. "
-    "En la casa el ambiente quedó partido en dos, y afuera las redes ardieron "
-    "durante horas. Todavía falta lo mejor.",
+    # Escrito a propósito con la forma que ahora se le pide a la inteligencia:
+    # escena, después lo que se dijeron uno por uno y en orden, y un cierre.
+    # Nada de frases de relleno: quien lo escucha entiende la historia entera
+    # sin haber leído nada.
+    "Aldo y Fabio quedaron solos en el cuarto naranja después del "
+    "posicionamiento. Aldo le reclamó que lo dejó solo en la placa. Fabio le "
+    "contestó que él no le debe nada a nadie. Aldo le respondió que entonces ya "
+    "no son equipo. Fabio se echó en la cama y le dijo que hiciera lo que "
+    "quisiera. Ninguno de los dos volvió a hablarse esa noche. ¿Quién tuvo la "
+    "razón?",
 )
 
 
