@@ -69,6 +69,13 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # Los reels llevan emojis dibujados en el letrero de arriba, y para eso
+      # hace falta la fuente de emojis a color. Si no se pudiera instalar, el
+      # video sale igual, solo que sin los emojis: por eso nunca corta el turno.
+      - name: Fuente de emojis
+        continue-on-error: true
+        run: sudo apt-get install -y -qq fonts-noto-color-emoji
+
       - name: Load config
         env:
           CONFIG_B64: ${{ secrets.CONFIG_B64 }}
@@ -188,6 +195,22 @@ jobs:
           # nuevo antes de cerrar este. Si falta, el reinicio igual funciona
           # (se cierra el turno y entra el relevo ya encolado).
           RELAY_TOKEN: ${{ secrets.RELAY_TOKEN }}
+          # Voz en off de los reels. Si el secreto no está, no pasa nada malo:
+          # el bot sigue publicando fotos como siempre.
+          VOZ_API_KEY: ${{ secrets.VOZ_API_KEY }}
+          # Nombre de la voz clonada en el panel de ai33.pro.
+          VOZ_NOMBRE: "VEXVIP"
+          # Qué parte de lo que se publica en la página 2 sale en video: 0.35
+          # es una de cada tres, más o menos. Se reparte parejo, no al azar
+          # (foto, foto, video, foto, foto, video…), así nunca caen dos videos
+          # pegados. En 0 nunca hay video; el botón 🎬 del panel manda por
+          # encima de esto.
+          #
+          # Ojo con lo que NO cambia esto: de la página 1 se toman SOLO las
+          # fotos. Los posts que allá son video se siguen saltando enteros, y
+          # así se quedan. El video de la página 2 se arma siempre a partir de
+          # la foto del post, moviéndola; nunca se usa un clip ajeno.
+          REEL_RATIO: "0.35"
         run: python runner.py
 
       # Guardado final del turno. El runner ya va guardando en cada ciclo;
