@@ -89,6 +89,12 @@ ESPERA_MAX_TAREA = int(os.environ.get("VOZ_ESPERA_MAX", "300"))
 # solo suma llamadas.
 ESPERA_ENTRE_PREGUNTAS = 3
 
+# Códigos con los que el servicio dice «ahora no puedo, vuelve luego». No son
+# un fallo nuestro ni del encargo: el encargo sigue vivo y lo normal es que a
+# la siguiente pregunta conteste bien. Así que no cuentan como tropiezos; el
+# único que manda es el reloj de ESPERA_MAX_TAREA.
+CODIGOS_PASAJEROS = (408, 425, 429, 500, 502, 503, 504)
+
 
 class ErrorDeVoz(RuntimeError):
     """No se pudo generar la voz en off."""
@@ -447,6 +453,12 @@ def _ajustar_a_duracion(marcas, segundos):
 
 
 def duracion(ruta):
+    """Cuántos segundos dura el audio, según ffprobe.
+
+    Si devuelve 0 es que ffprobe no está o no supo leer el archivo, y eso no
+    puede pasar en silencio: sin la duración los subtítulos no se pueden
+    repartir y el reel sale mal. Por eso se avisa en el registro.
+    """
     try:
         salida = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -454,7 +466,11 @@ def duracion(ruta):
             capture_output=True, text=True, timeout=60,
         ).stdout.strip()
         return float(salida)
-    except Exception:
+    except FileNotFoundError:
+        log("ffprobe no está instalado: no se puede medir el audio.")
+        return 0.0
+    except Exception as e:
+        log(f"No se pudo medir la duración de {Path(ruta).name} ({e}).")
         return 0.0
 
 
@@ -491,18 +507,31 @@ def esperar_tarea(numero, espera_max=None):
     fallos = 0
     ultimo_aviso = 0
 
+    def avisar(mensaje):
+        """Escribe en el registro como mucho una vez cada 30 s.
+
+        Si no, una espera larga llenaría el registro de líneas iguales.
+        """
+        nonlocal ultimo_aviso
+        if time.time() - ultimo_aviso > 30:
+            ultimo_aviso = time.time()
+            log(mensaje)
+
     while True:
         ficha = None
+        pasajero = False
         try:
             r = requests.get(url, headers=_cabeceras(), timeout=60)
             if r.status_code < 400:
                 ficha = r.json()
             else:
-                fallos += 1
                 motivo = f"{r.status_code} {r.text[:150]}"
+                pasajero = r.status_code in CODIGOS_PASAJEROS
         except Exception as e:
-            fallos += 1
+            # Un corte de red también es pasajero: el encargo sigue su curso
+            # del otro lado.
             motivo = str(e)
+            pasajero = True
 
         if ficha is not None:
             fallos = 0
@@ -514,15 +543,16 @@ def esperar_tarea(numero, espera_max=None):
                     "El servicio no pudo generar el audio: "
                     + str(ficha.get("error_message") or "sin detalle")
                 )
-            # Sigue trabajando. Se avisa cada 30 s para no llenar el registro.
-            if time.time() - ultimo_aviso > 30:
-                ultimo_aviso = time.time()
-                avance = ficha.get("progress")
-                log(f"Audio en preparación{f' ({avance}%)' if avance else ''}…")
+            avance = ficha.get("progress")
+            avisar(f"Audio en preparación{f' ({avance}%)' if avance else ''}…")
+        elif pasajero:
+            # El servicio pide paciencia. Se espera y se vuelve a preguntar; el
+            # que corta acá es el reloj, no el contador de tropiezos.
+            avisar(f"El servicio pide esperar ({motivo}); sigo preguntando.")
         else:
-            # Un tropiezo suelto al preguntar no es motivo para tirar el
-            # encargo: puede estar hecho igual. Solo se abandona si falla
-            # varias veces seguidas.
+            # Esto sí es un problema de verdad (clave mala, encargo que no
+            # existe). Se insiste un par de veces por si acaso y se abandona.
+            fallos += 1
             if fallos >= 5:
                 raise ErrorDeVoz(f"No se pudo consultar el encargo: {motivo}")
             log(f"Consulta fallida ({motivo}); se reintenta.")
