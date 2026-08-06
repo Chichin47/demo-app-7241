@@ -293,7 +293,8 @@ TEXTO_AYUDA = (
     "🖼 Foto / 🎬 Video: elegí primero el formato y después la hora, porque tocar "
     "una hora cierra el menú. Igual, mientras no haya salido podés cambiarle el "
     "formato o la hora desde el mismo mensaje. Si no elegís nada queda en "
-    "🤖 Automático, que es el reparto de siempre: uno de cada tres sale en video.\n\n"
+    "🤖 Automático, que ahora mira la marca: si el original de la página 1 lleva "
+    "#UR sale en video, y si no lleva nada sale en foto.\n\n"
     "El bot trabaja solo: barre la página 1 cada 3 minutos y publica de a uno, con "
     "al menos {min:.0f} minutos entre publicaciones. Por eso el panel puede estar "
     "hasta 3 minutos atrasado: con 🔄 Actualizar lo refrescas."
@@ -878,8 +879,8 @@ def atender_comandos(mensajes):
 # Menús
 # --------------------------------------------------------------------------
 
-# Cómo puede salir un envío hecho a mano. El valor vacío es "no elegí nada",
-# que es lo de siempre: el bot reparte uno de cada tres en video.
+# Cómo puede salir un envío hecho a mano. El valor vacío es "no elegí nada":
+# entonces se mira la marca #UR en el texto, igual que en el automático.
 FORMATOS_MANUAL = [
     ("🤖 Automático", ""),
     ("🖼 Foto", "foto"),
@@ -892,7 +893,7 @@ def etiqueta_formato(formato):
         return "🎬 Va a salir como video."
     if formato == "foto":
         return "🖼 Va a salir como foto."
-    return "🤖 El formato lo elige el bot (uno de cada tres sale en video)."
+    return "🤖 Lo decide la marca: con #UR sale video, sin #UR sale foto."
 
 
 def fila_formato(key, elegido=""):
@@ -1087,13 +1088,16 @@ def publish_job(job, chat_id, tmpdir):
     out_path = tmpdir / f"{key}_out.jpg"
     bot.compose_image(spec_path, out_path)
 
-    final_caption = (edit.get("caption") or "").strip() or "#LCDLF6"
+    final_caption = bot.quitar_etiqueta(
+        (edit.get("caption") or "").strip()) or "#LCDLF6"
 
-    # Si el trabajo trae formato pedido a mano ("foto" o "reel"), manda eso; si
-    # no, se reparte igual que en el automático. Si el video falla en cualquier
-    # punto, se publica la foto: el post sale igual.
+    # Si el trabajo trae formato pedido a mano ("foto" o "reel"), manda eso, que
+    # es lo normal cuando mandás desde aquí. Si no elegiste, se mira lo mismo
+    # que en el automático: si el texto lleva #UR sale video, si no, foto. Si el
+    # video falla en cualquier punto, se publica la foto: el post sale igual.
     guion = bot.guion_de_reel(edit, text)
-    formato, motivo = bot.elegir_formato(guion, len(local_images), job.get("formato"))
+    formato, motivo = bot.elegir_formato(
+        guion, len(local_images), job.get("formato"), texto=text)
     log(f"{key}: sale como {formato} ({motivo}).")
     if formato == "reel":
         try:
@@ -1484,7 +1488,7 @@ def main():
             "status": "awaiting",
             "publish_at": 0,
             "created_at": time.time(),
-            # Vacío = como siempre: el bot reparte uno de cada tres en video.
+            # Vacío = lo decide la marca: con #UR video, sin #UR foto.
             # Se llena si tocás 🖼 Foto o 🎬 Video en el menú.
             "formato": "",
         }

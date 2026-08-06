@@ -891,34 +891,38 @@ def publish_reel(video_path, description):
 
 FORMATO_PATH = BASE_DIR / "state" / "formato.json"
 
-# Qué proporción de las publicaciones sale en video. 0.35 = una de cada tres,
-# más o menos. En 0 nunca hay video; en 1, siempre.
-def _proporcion_reel():
-    try:
-        valor = float(os.environ.get("REEL_RATIO", "0.35"))
-    except ValueError:
-        valor = 0.35
-    return max(0.0, min(1.0, valor))
+# La marca que se pone a mano en la publicación de la página 1 para que esa —y
+# solo esa— salga en video. Antes el formato se repartía por turnos (uno de cada
+# tres), pero los videos rinden menos que las fotos, así que ahora el video no
+# se sortea: se pide.
+ETIQUETA_VIDEO = (os.environ.get("ETIQUETA_VIDEO") or "#UR").strip()
 
 
-def _turno_de_reel():
-    """Decide si a esta publicación le toca video, repartiendo parejo.
+def _regex_etiqueta():
+    """La etiqueta como palabra entera, para que #UR no se confunda con #URTV."""
+    cuerpo = re.escape(ETIQUETA_VIDEO.lstrip("#"))
+    return re.compile(rf"#\s*{cuerpo}(?![\w])", re.IGNORECASE | re.UNICODE)
 
-    En vez de tirar una moneda —que a veces saca cuatro videos seguidos y
-    después ninguno en todo el día— se lleva la cuenta de cuántas van y se
-    reparte de forma pareja: con 0.35, los turnos de video caen en el 3, el 6,
-    el 9… sin amontonarse.
-    """
-    proporcion = _proporcion_reel()
-    if proporcion <= 0:
+
+def pide_video(texto):
+    """¿El original de la página 1 trae la marca que pide video?"""
+    if not ETIQUETA_VIDEO:
         return False
-    try:
-        estado = json.loads(FORMATO_PATH.read_text())
-    except Exception:
-        estado = {}
-    n = int(estado.get("publicadas", 0))
-    toca = int((n + 1) * proporcion) > int(n * proporcion)
-    return toca
+    return bool(_regex_etiqueta().search(texto or ""))
+
+
+def quitar_etiqueta(texto):
+    """Saca la marca del texto: es una orden interna, no parte del contenido.
+
+    Se limpia antes de mandarle el texto a Claude y otra vez sobre lo que Claude
+    devuelve, porque si la marca se colara en la descripción de la página 2
+    quedaría a la vista de todo el mundo un hashtag que no significa nada para
+    quien lee.
+    """
+    limpio = _regex_etiqueta().sub("", texto or "")
+    limpio = re.sub(r"[ \t]{2,}", " ", limpio)
+    limpio = re.sub(r"\n{3,}", "\n\n", limpio)
+    return limpio.strip()
 
 
 def _anotar_formato(formato):
@@ -937,12 +941,17 @@ def _anotar_formato(formato):
         log(f"No se pudo anotar el formato ({e}); sigo igual.")
 
 
-def elegir_formato(guion, cuantas_fotos, forzado=None):
+def elegir_formato(guion, cuantas_fotos, forzado=None, texto=""):
     """Devuelve "reel" o "foto", con el motivo, para dejarlo en el log.
 
-    El video necesita tres cosas: que la voz esté configurada, que Claude haya
-    escrito un guion, y que le toque el turno. Si falta cualquiera, sale foto,
-    que es lo que se venía haciendo y nunca falla.
+    En automático el formato ya no se sortea: sale video solo si el original de
+    la página 1 lleva la marca (por defecto #UR). Sin marca, foto. Lo que se
+    manda a mano desde el bot no cambia: si el administrador pidió un formato,
+    ese manda por encima de todo.
+
+    Aun con la marca, el video necesita voz configurada y guion de Claude. Si
+    falta alguno sale foto —que nunca falla— y el motivo queda escrito, para no
+    quedarse con la duda de por qué el #UR no dio video.
     """
     if forzado in ("foto", "reel"):
         if forzado == "reel" and not (guion and voz.hay_voz()):
@@ -950,13 +959,13 @@ def elegir_formato(guion, cuantas_fotos, forzado=None):
         return forzado, "lo pidió el administrador"
     if not cuantas_fotos:
         return "foto", "no hay fotos"
+    if not pide_video(texto):
+        return "foto", f"el original no lleva {ETIQUETA_VIDEO}"
     if not voz.hay_voz():
-        return "foto", "falta configurar la voz (VOZ_API_KEY)"
+        return "foto", f"lleva {ETIQUETA_VIDEO} pero falta la voz (VOZ_API_KEY)"
     if not guion:
-        return "foto", "Claude no dejó guion narrado"
-    if not _turno_de_reel():
-        return "foto", "le toca turno de foto"
-    return "reel", "le toca turno de video"
+        return "foto", f"lleva {ETIQUETA_VIDEO} pero Claude no dejó guion narrado"
+    return "reel", f"el original lleva {ETIQUETA_VIDEO}"
 
 
 def armar_reel(local_images, guion, tmpdir):
@@ -1013,7 +1022,10 @@ def process_post(post, tmpdir, allow_publish=True):
         download_image(url, dest)
         local_images.append(dest)
 
-    edit = ask_claude(text, len(local_images))
+    # A Claude se le manda el texto SIN la marca: es una orden para el bot, no
+    # contenido, y si la viera podría terminar copiándola en la descripción.
+    texto_limpio = quitar_etiqueta(text)
+    edit = ask_claude(texto_limpio, len(local_images))
     if edit.get("skip"):
         log(f"Post {post_id}: Claude decidió omitir ({edit.get('skip_reason')}).")
         return "skipped_by_ai"
@@ -1022,16 +1034,16 @@ def process_post(post, tmpdir, allow_publish=True):
     out_path = tmpdir / f"{post_id}_out.jpg"
     compose_image(spec_path, out_path)
 
-    caption = acotar_preambulo(edit.get("caption", "").strip())
+    caption = quitar_etiqueta(acotar_preambulo(edit.get("caption", "").strip()))
     if not caption:
         caption = "#LCDLF6"
 
     # El mismo post puede salir como foto o como reel. La foto ya está armada
     # arriba y sirve igual de vista previa, así que el video se arma solo si le
     # toca; si algo falla armándolo, se publica la foto y no se pierde el post.
-    guion = guion_de_reel(edit, text)
+    guion = guion_de_reel(edit, texto_limpio)
     formato, motivo = elegir_formato(
-        guion, len(local_images), cola.formato_pedido(post_id)
+        guion, len(local_images), cola.formato_pedido(post_id), texto=text
     )
     log(f"Post {post_id}: sale como {formato} ({motivo}).")
     reel_path = None
@@ -1139,15 +1151,17 @@ def rehacer_como_video(pedido, tmpdir):
         download_image(url, dest)
         local_images.append(dest)
 
-    edit = ask_claude(text, len(local_images))
+    texto_limpio = quitar_etiqueta(text)
+    edit = ask_claude(texto_limpio, len(local_images))
     if edit.get("skip"):
         return False, f"Claude prefirió no tocarlo ({edit.get('skip_reason')})"
 
-    guion = guion_de_reel(edit, text)
+    guion = guion_de_reel(edit, texto_limpio)
     if not guion:
         return False, "no salió guion para narrar, así que no hay video"
 
-    caption = acotar_preambulo((edit.get("caption") or "").strip()) or "#LCDLF6"
+    caption = quitar_etiqueta(
+        acotar_preambulo((edit.get("caption") or "").strip())) or "#LCDLF6"
     reel_path = armar_reel(local_images, guion, tmpdir)
 
     if DRY_RUN:
@@ -1159,9 +1173,9 @@ def rehacer_como_video(pedido, tmpdir):
         return False, "Facebook no devolvió el identificador del video"
     record_published(nuevo, pid, text, caption, "reel")
     mark_published_now("rehacer")
-    # Cuenta para el reparto de uno de cada tres aunque lo hayas pedido a mano:
-    # es un video más que la gente ve en la página. Si pedís tres seguidos, el
-    # reparto lo compensa solo con fotos y la página no se llena de video.
+    # Se cuenta igual, aunque lo hayas pedido a mano: la cuenta ya no decide
+    # nada (el formato lo decide la marca #UR), pero sirve para saber de un
+    # vistazo cuántos videos y cuántas fotos llevan.
     _anotar_formato("reel")
     _anotar_arranque(guion.get("narracion"))
     log(f"Encargo: {pid} -> publicado como reel {nuevo}")
