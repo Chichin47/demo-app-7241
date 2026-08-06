@@ -217,17 +217,23 @@ jobs:
           VOZ_API_KEY: ${{ secrets.VOZ_API_KEY }}
           # Nombre de la voz clonada en el panel de ai33.pro.
           VOZ_NOMBRE: "VEXVIP"
-          # Qué parte de lo que se publica en la página 2 sale en video: 0.35
-          # es una de cada tres, más o menos. Se reparte parejo, no al azar
-          # (foto, foto, video, foto, foto, video…), así nunca caen dos videos
-          # pegados. En 0 nunca hay video; el botón 🎬 del panel manda por
-          # encima de esto.
+          # La marca que decide el formato. Antes el video se repartía por
+          # turnos (uno de cada tres); ahora no se sortea, se pide: si el
+          # original de la página 1 lleva esta marca en el texto, esa
+          # publicación sale en video en la página 2; si no la lleva, sale en
+          # foto. Los videos rinden bastante menos que las fotos, así que el
+          # video pasó a ser la excepción elegida a mano.
+          #
+          # La marca se busca como palabra entera (#UR no se confunde con
+          # #URTV) y se borra del texto antes de publicar: es una orden interna
+          # para el bot, no parte de la descripción. El botón 🎬 del panel
+          # sigue mandando por encima de esto.
           #
           # Ojo con lo que NO cambia esto: de la página 1 se toman SOLO las
           # fotos. Los posts que allá son video se siguen saltando enteros, y
           # así se quedan. El video de la página 2 se arma siempre a partir de
           # la foto del post, moviéndola; nunca se usa un clip ajeno.
-          REEL_RATIO: "0.35"
+          ETIQUETA_VIDEO: "#UR"
         run: python runner.py
 
       # Guardado final del turno. El runner ya va guardando en cada ciclo;
