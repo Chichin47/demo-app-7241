@@ -107,7 +107,8 @@ def check_backup_page(page_id, token):
 def check_claude():
     texto = "Josue: Este sillón de peluche es horrible, ¿quién lo eligió?"
     try:
-        edit = bot.ask_claude(texto, 1, manual=True)
+        # Sin guion hablado: esto solo comprueba que Claude conteste.
+        edit = bot.ask_claude(texto, 1, manual=True, con_video=False)
         if edit.get("skip"):
             add(False, f"Claude: en modo manual todavía descarta ({edit.get('skip_reason')}).")
             return False

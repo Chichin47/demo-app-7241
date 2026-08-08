@@ -1072,9 +1072,15 @@ def publish_job(job, chat_id, tmpdir):
         download_telegram_photo(file_id, dest)
         local_images.append(dest)
 
+    # El guion hablado se le pide solo si este envío va a salir en video: o
+    # porque tocaste 🎬, o porque el texto lleva la marca. Si va en foto, ese
+    # pedido sería un guion que nadie va a escuchar, y se paga igual.
+    pedido = job.get("formato")
+    con_video = pedido == "reel" or (pedido != "foto" and bot.pide_video(text))
+
     log(f"{key}: {len(local_images)} foto(s) + descripción de {len(text)} caracteres. Pidiendo edición a Claude.")
     # manual=True: lo mandaste tú a propósito, así que Claude no puede descartarlo.
-    edit = bot.ask_claude(text, len(local_images), manual=True)
+    edit = bot.ask_claude(text, len(local_images), manual=True, con_video=con_video)
     if edit.get("skip") or not edit.get("lines"):
         motivo = edit.get("skip_reason", "no devolvió frases")
         log(f"{key}: Claude no devolvió frases ({motivo}); se usa el texto original como frase.")
@@ -1095,9 +1101,9 @@ def publish_job(job, chat_id, tmpdir):
     # es lo normal cuando mandás desde aquí. Si no elegiste, se mira lo mismo
     # que en el automático: si el texto lleva #UR sale video, si no, foto. Si el
     # video falla en cualquier punto, se publica la foto: el post sale igual.
-    guion = bot.guion_de_reel(edit, text)
+    guion = bot.guion_de_reel(edit, text) if con_video else None
     formato, motivo = bot.elegir_formato(
-        guion, len(local_images), job.get("formato"), texto=text)
+        guion, len(local_images), pedido, texto=text)
     log(f"{key}: sale como {formato} ({motivo}).")
     if formato == "reel":
         try:

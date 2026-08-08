@@ -118,7 +118,8 @@ def _compose_from_source(source_post_id, source_text, caption_override, tmpdir):
         d = tmpdir / f"src_{i}.jpg"
         bot.download_image(u, d)
         local.append(d)
-    edit = bot.ask_claude(text, len(local))
+    # Sin guion hablado: acá solo se rehace la FOTO, nunca sale un video.
+    edit = bot.ask_claude(text, len(local), con_video=False)
     if edit.get("skip"):
         log(f"Claude omitió el post ({edit.get('skip_reason')}).")
         return None, None

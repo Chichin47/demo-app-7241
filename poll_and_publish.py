@@ -254,7 +254,7 @@ def download_image(url, dest):
 NOMBRE_ALTERNA = os.environ.get("PAGE_NAME_BACKUP", "").strip() or "la página alterna"
 NOMBRE_PRINCIPAL = os.environ.get("PAGE_NAME_MAIN", "").strip() or "la página principal"
 
-CLAUDE_SYSTEM_PROMPT = f"""Eres el editor de la página alterna "{NOMBRE_ALTERNA}", que reposta \
+_PEDIDO_BASE = f"""Eres el editor de la página alterna "{NOMBRE_ALTERNA}", que reposta \
 contenido de la página principal "{NOMBRE_PRINCIPAL}" con un formato distinto para evitar \
 duplicado de contenido en Facebook.
 
@@ -300,7 +300,14 @@ Tu trabajo, dado el texto original de un post (título + diálogo) y la cantidad
    y diálogo incluidos (aquí sin virgulillas, solo el reemplazo con números).
 5. Si el post no tiene contenido de diálogo aprovechable (por ejemplo solo es un anuncio, o el texto \
    está vacío), responde skip=true con skip_reason.
+"""
 
+# Todo esto se le pide SOLO cuando el post de verdad va a salir en video. Está
+# aparte porque es más de la mitad del pedido, y el formato ya se sabe antes de
+# llamar a Claude: lo decide la marca #UR o el botón 🎬 de la cola. Pedir el
+# guion narrado en un post que va a salir en foto es pagar por un texto que
+# nadie va a leer nunca; de cada cinco publicaciones, cuatro son foto.
+_PEDIDO_VIDEO = """
 6. Además de lo anterior, prepara el material por si este post sale en formato video corto (reel). \
    Son dos campos y SIEMPRE se llenan cuando skip=false:
 
@@ -362,8 +369,19 @@ Tu trabajo, dado el texto original de un post (título + diálogo) y la cantidad
       - Números y siglas escritos como se pronuncian ("veinticuatro siete", no "24/7").
       - El titulo_reel y la narración tienen que hablar de lo mismo: el letrero de arriba es el \
         anzuelo de la historia que se va a contar, no un titular suelto.
+"""
 
+_PEDIDO_CIERRE = """
 Responde ÚNICAMENTE llamando a la herramienta submit_edit con el JSON estructurado."""
+
+
+def prompt_sistema(con_video):
+    """El pedido que se le manda a Claude, con o sin la parte del video."""
+    return _PEDIDO_BASE + (_PEDIDO_VIDEO if con_video else "") + _PEDIDO_CIERRE
+
+
+# Se deja armado el completo por si algo de afuera lo importa por nombre.
+CLAUDE_SYSTEM_PROMPT = prompt_sistema(True)
 
 SUBMIT_TOOL = {
     "name": "submit_edit",
@@ -424,6 +442,21 @@ SUBMIT_TOOL = {
         "required": ["skip"],
     },
 }
+
+# Los campos que solo sirven para el video. Si el post va a salir en foto no se
+# le ofrecen a Claude: lo que no está en la herramienta no se puede llenar, y lo
+# que no se llena no se paga.
+CAMPOS_DE_VIDEO = ("titulo_reel", "narracion")
+
+
+def herramienta(con_video):
+    """La misma herramienta de siempre, sin los campos del video cuando no toca."""
+    if con_video:
+        return SUBMIT_TOOL
+    propiedades = {k: v for k, v in SUBMIT_TOOL["input_schema"]["properties"].items()
+                   if k not in CAMPOS_DE_VIDEO}
+    esquema = dict(SUBMIT_TOOL["input_schema"], properties=propiedades)
+    return dict(SUBMIT_TOOL, input_schema=esquema)
 
 
 MANUAL_OVERRIDE = (
@@ -568,7 +601,14 @@ def _anotar_arranque(narracion):
         log(f"No se pudo anotar el arranque ({e}); sigo igual.")
 
 
-def ask_claude(original_text, num_images, manual=False):
+def ask_claude(original_text, num_images, manual=False, con_video=False):
+    """Le pide a Claude la edición del post.
+
+    con_video=True agrega la parte del pedido que explica cómo escribir el
+    letrero y el guion hablado. Cuesta más o menos el doble, así que se manda
+    solo cuando ya se sabe que ese post sale en video (lo decide la marca #UR o
+    el botón 🎬 de la cola, y las dos cosas se saben antes de llamar).
+    """
     import anthropic
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -581,16 +621,19 @@ def ask_claude(original_text, num_images, manual=False):
         user_msg += MANUAL_OVERRIDE
     # Va en el mensaje y no en el prompt de sistema porque cambia post a post:
     # es lo único de todo el pedido que depende de lo que ya se publicó antes.
-    try:
-        user_msg += instruccion_arranque()
-    except Exception as e:
-        log(f"No se pudo armar la indicación de arranque ({e}); sigo con la de siempre.")
+    # Solo sirve para variar el arranque de la narración, así que en los posts
+    # que salen en foto no hace falta mandarla.
+    if con_video:
+        try:
+            user_msg += instruccion_arranque()
+        except Exception as e:
+            log(f"No se pudo armar la indicación de arranque ({e}); sigo con la de siempre.")
     model = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5")
     resp = client.messages.create(
         model=model,
         max_tokens=1024,
-        system=CLAUDE_SYSTEM_PROMPT,
-        tools=[SUBMIT_TOOL],
+        system=prompt_sistema(con_video),
+        tools=[herramienta(con_video)],
         tool_choice={"type": "tool", "name": "submit_edit"},
         messages=[{"role": "user", "content": user_msg}],
     )
@@ -1022,10 +1065,17 @@ def process_post(post, tmpdir, allow_publish=True):
         download_image(url, dest)
         local_images.append(dest)
 
+    # El formato se sabe ANTES de llamar a Claude, así que el guion narrado se
+    # pide solo cuando de verdad va a haber video. Ojo con el orden: acá todavía
+    # no se decide el formato definitivo (eso lo hace elegir_formato más abajo,
+    # que además mira si hay voz), esto es solo si vale la pena pedir el guion.
+    pedido = cola.formato_pedido(post_id)
+    con_video = pedido == "reel" or (pedido != "foto" and pide_video(text))
+
     # A Claude se le manda el texto SIN la marca: es una orden para el bot, no
     # contenido, y si la viera podría terminar copiándola en la descripción.
     texto_limpio = quitar_etiqueta(text)
-    edit = ask_claude(texto_limpio, len(local_images))
+    edit = ask_claude(texto_limpio, len(local_images), con_video=con_video)
     if edit.get("skip"):
         log(f"Post {post_id}: Claude decidió omitir ({edit.get('skip_reason')}).")
         return "skipped_by_ai"
@@ -1041,9 +1091,9 @@ def process_post(post, tmpdir, allow_publish=True):
     # El mismo post puede salir como foto o como reel. La foto ya está armada
     # arriba y sirve igual de vista previa, así que el video se arma solo si le
     # toca; si algo falla armándolo, se publica la foto y no se pierde el post.
-    guion = guion_de_reel(edit, texto_limpio)
+    guion = guion_de_reel(edit, texto_limpio) if con_video else None
     formato, motivo = elegir_formato(
-        guion, len(local_images), cola.formato_pedido(post_id), texto=text
+        guion, len(local_images), pedido, texto=text
     )
     log(f"Post {post_id}: sale como {formato} ({motivo}).")
     reel_path = None
@@ -1151,8 +1201,9 @@ def rehacer_como_video(pedido, tmpdir):
         download_image(url, dest)
         local_images.append(dest)
 
+    # Acá el video no se discute: es un encargo tuyo, así que se pide el guion.
     texto_limpio = quitar_etiqueta(text)
-    edit = ask_claude(texto_limpio, len(local_images))
+    edit = ask_claude(texto_limpio, len(local_images), con_video=True)
     if edit.get("skip"):
         return False, f"Claude prefirió no tocarlo ({edit.get('skip_reason')})"
 
