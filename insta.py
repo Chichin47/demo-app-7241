@@ -487,11 +487,17 @@ def diagnostico(page_id, token):
 
 
 def vencimiento(token):
-    """Cuándo vence la llave de Instagram, en días. None si no se puede saber.
+    """Cuántos días le quedan a la llave de Instagram. None si no se puede saber.
 
-    Importa porque la llave de Instagram, a diferencia de la de la página, SÍ
-    vence: la larga dura 60 días. Sin este aviso, un día Instagram se apagaría
-    solo y nos enteraríamos por casualidad.
+    Mira DOS relojes distintos, y este es el punto:
+
+    * expires_at: cuándo caduca la llave. En cero significa que no caduca.
+    * data_access_expires_at: la ventana de acceso a datos que Meta le pone
+      aparte. Vence sola cada tantos meses aunque la llave sea eterna, y
+      cuando vence la llave deja de servir igual.
+
+    Mirar solo el primero es la trampa: la llave dice "no vence nunca" y un
+    día deja de funcionar igual. Así que se devuelve el más cercano de los dos.
     """
     try:
         r = requests.get(
@@ -502,13 +508,22 @@ def vencimiento(token):
         if r.status_code >= 400:
             return None
         datos = ((r.json() or {}).get("data") or {})
-        vence = datos.get("expires_at")
-        if not vence:
-            # 0 significa que no vence nunca (las llaves de página son así).
-            return float("inf") if vence == 0 else None
-        return (vence - time.time()) / 86400.0
     except Exception:
         return None
+
+    ahora = time.time()
+    plazos = []
+    for campo in ("expires_at", "data_access_expires_at"):
+        valor = datos.get(campo)
+        if valor is None:
+            continue
+        if valor == 0:          # cero = ese reloj no corre
+            continue
+        plazos.append((valor - ahora) / 86400.0)
+    if not plazos:
+        # Ninguno de los dos relojes corre: la llave es realmente eterna.
+        return float("inf") if datos else None
+    return min(plazos)
 
 
 def aviso_de_vencimiento(token, log=print):
