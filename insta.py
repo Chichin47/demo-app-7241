@@ -23,11 +23,18 @@ publique. El bot no pasa por ese creador —le habla directo a la API—, así q
 lo que él publica se queda solo en Facebook salvo que se lo mande a mano.
 """
 
+import json
 import os
+from pathlib import Path
 
 import requests
 
 GRAPH = "https://graph.facebook.com/v25.0"
+
+CUENTA_PATH = Path(__file__).resolve().parent / "state" / "instagram.json"
+
+# Un carrusel de Instagram admite de 2 a 10 diapositivas.
+CARRUSEL_MAXIMO = 10
 
 # Cuánto se espera a cada llamada. Instagram tiene que ir a buscar la imagen a
 # la dirección que le pasamos, así que la primera es la más lenta de las dos.
@@ -135,8 +142,164 @@ def forma(ruta, log=print):
     return entra, proporcion
 
 
-def publicar_foto(page_id, token, resultado, caption, ruta=None, log=print):
-    """Manda a Instagram la foto que ya se publicó en la página 2.
+def anotar(clave):
+    """Lleva la cuenta de cómo salió cada post en Instagram.
+
+    Sirve para contestar con datos, y no a ojo, la pregunta de cuántos entran
+    apilados y cuántos necesitan carrusel.
+    """
+    try:
+        estado = json.loads(CUENTA_PATH.read_text())
+    except Exception:
+        estado = {}
+    estado[clave] = int(estado.get(clave, 0)) + 1
+    estado["total"] = int(estado.get("total", 0)) + 1
+    try:
+        CUENTA_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CUENTA_PATH.write_text(json.dumps(estado, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _subir_oculta(page_id, token, ruta, log=print):
+    """Sube una foto a Facebook SIN publicarla, solo para tener su dirección.
+
+    Instagram no acepta que le subamos el archivo: exige una dirección de
+    internet. Para la imagen apilada alcanza con la dirección de la foto que ya
+    se publicó, pero las diapositivas del carrusel no están publicadas en
+    ningún lado, así que hay que darles una.
+
+    Con published=false la foto NO sale en la página ni la ve nadie: queda
+    guardada y nada más. Devuelve (direccion, id_para_borrarla_despues).
+    """
+    try:
+        with open(ruta, "rb") as f:
+            r = requests.post(
+                f"{GRAPH}/{page_id}/photos",
+                files={"source": f},
+                data={"published": "false", "access_token": token},
+                timeout=ESPERA,
+            )
+        if r.status_code >= 400:
+            log(f"Instagram: no pude dejar la diapositiva en Facebook "
+                f"({r.status_code}): {(r.text or '')[:300]}")
+            return None, None
+        foto_id = (r.json() or {}).get("id")
+        if not foto_id:
+            return None, None
+        r2 = requests.get(f"{GRAPH}/{foto_id}",
+                          params={"fields": "images", "access_token": token},
+                          timeout=30)
+        r2.raise_for_status()
+        imagenes = (r2.json() or {}).get("images") or []
+        return (imagenes[0].get("source") if imagenes else None), foto_id
+    except Exception as e:
+        log(f"Instagram: falló al preparar una diapositiva ({e}).")
+        return None, None
+
+
+def _borrar_ocultas(ids, token, log=print):
+    """Borra las copias temporales que acabamos de subir para el carrusel.
+
+    Ojo con lo que borra y lo que no: SOLO toca los identificadores que esta
+    misma función acaba de crear segundos antes, que son copias sin publicar
+    que nadie vio nunca. Nunca toca una publicación de verdad. Con
+    IG_LIMPIAR=0 se puede dejar sin borrar nada.
+    """
+    if (os.environ.get("IG_LIMPIAR") or "1").strip().lower() in ("0", "no", "off", "false"):
+        return
+    for foto_id in ids:
+        try:
+            requests.delete(f"{GRAPH}/{foto_id}",
+                            params={"access_token": token}, timeout=30)
+        except Exception as e:
+            log(f"Instagram: quedó una copia temporal sin borrar ({e}).")
+
+
+def _carrusel(page_id, token, ig, diapositivas, caption, log=print):
+    """Publica varias fotos como un carrusel que se desliza.
+
+    Es el camino de los posts de tres o cuatro fotos: apiladas quedarían
+    demasiado altas para Instagram, pero de a una entran perfecto y encima se
+    ven más grandes que en la imagen apilada.
+    """
+    if len(diapositivas) > CARRUSEL_MAXIMO:
+        log(f"Instagram: el post trae {len(diapositivas)} fotos y el carrusel "
+            f"admite {CARRUSEL_MAXIMO}; mando las primeras {CARRUSEL_MAXIMO}.")
+        diapositivas = diapositivas[:CARRUSEL_MAXIMO]
+
+    temporales, hijos = [], []
+    try:
+        for n, ruta in enumerate(diapositivas, 1):
+            direccion, foto_id = _subir_oculta(page_id, token, ruta, log=log)
+            if foto_id:
+                temporales.append(foto_id)
+            if not direccion:
+                log(f"Instagram: me quedé sin la diapositiva {n}; no mando el carrusel.")
+                return None
+            r = requests.post(
+                f"{GRAPH}/{ig}/media",
+                data={"image_url": direccion, "is_carousel_item": "true",
+                      "access_token": token},
+                timeout=ESPERA,
+            )
+            if r.status_code >= 400:
+                log(f"Instagram: rechazó la diapositiva {n} ({r.status_code}): "
+                    f"{(r.text or '')[:300]}")
+                return None
+            hijo = (r.json() or {}).get("id")
+            if not hijo:
+                return None
+            hijos.append(hijo)
+
+        if len(hijos) < 2:
+            log("Instagram: un carrusel necesita al menos dos fotos.")
+            return None
+
+        r = requests.post(
+            f"{GRAPH}/{ig}/media",
+            data={"media_type": "CAROUSEL", "children": ",".join(hijos),
+                  "caption": caption or "", "access_token": token},
+            timeout=ESPERA,
+        )
+        if r.status_code >= 400:
+            log(f"Instagram: no aceptó el carrusel ({r.status_code}): "
+                f"{(r.text or '')[:400]}")
+            return None
+        envase = (r.json() or {}).get("id")
+        if not envase:
+            return None
+
+        r = requests.post(
+            f"{GRAPH}/{ig}/media_publish",
+            data={"creation_id": envase, "access_token": token},
+            timeout=ESPERA,
+        )
+        if r.status_code >= 400:
+            log(f"Instagram: no pudo publicar el carrusel ({r.status_code}): "
+                f"{(r.text or '')[:400]}")
+            return None
+        ig_post = (r.json() or {}).get("id")
+        log(f"Instagram: publicado {ig_post} como carrusel de {len(hijos)} fotos.")
+        return ig_post
+    except Exception as e:
+        log(f"Instagram: falló el carrusel ({e}).")
+        return None
+    finally:
+        _borrar_ocultas(temporales, token, log=log)
+
+
+def publicar_foto(page_id, token, resultado, caption, ruta=None,
+                  diapositivas=None, log=print):
+    """Manda a Instagram lo mismo que acaba de salir en la página 2.
+
+    Dos caminos, y el que se usa lo decide la forma de la imagen, no el gusto:
+
+    * Si la imagen apilada entra en lo que Instagram acepta (una foto, o dos
+      apaisadas), va tal cual, igualita a como se ve en Facebook. No hay que
+      subir nada: se usa la dirección que Facebook le acaba de dar.
+    * Si no entra (tres o cuatro fotos, que apiladas quedan casi 9:16), va como
+      carrusel: cada foto una diapositiva, entera y con su propia frase encima.
 
     `resultado` es lo que devolvió publish_photo, tal cual. Devuelve el
     identificador del post de Instagram, o None si no salió; nunca revienta.
@@ -148,17 +311,26 @@ def publicar_foto(page_id, token, resultado, caption, ruta=None, log=print):
         return None
     ig = ficha.get("id")
 
-    # Se mide antes de molestar a nadie: si la forma no entra, Instagram lo iba
-    # a rechazar igual, y así queda claro en el registro por qué no salió.
+    # Se mide antes de molestar a nadie: si la forma no entra, Instagram la iba
+    # a rechazar igual, y así queda escrito en el registro por qué se fue por
+    # el otro camino.
+    entra = True
     if ruta:
-        entra, proporcion = forma(ruta, log=log)
-        if not entra:
-            log("Instagram: no la mando, la rechazaría por la forma. "
-                "El post de Facebook ya salió, no se pierde nada.")
-            return None
+        entra, _ = forma(ruta, log=log)
+
+    if not entra:
+        if diapositivas and len(diapositivas) >= 2:
+            ig_post = _carrusel(page_id, token, ig, diapositivas, caption, log=log)
+            anotar("carrusel" if ig_post else "carrusel_fallado")
+            return ig_post
+        log("Instagram: no entra apilada y no hay diapositivas para el carrusel. "
+            "El post de Facebook ya salió, no se pierde nada.")
+        anotar("sin_camino")
+        return None
 
     direccion = _direccion_de_la_foto(resultado, token, log=log)
     if not direccion:
+        anotar("sin_direccion")
         return None
 
     try:
@@ -172,6 +344,7 @@ def publicar_foto(page_id, token, resultado, caption, ruta=None, log=print):
         if r.status_code >= 400:
             log(f"Instagram: no aceptó la foto ({r.status_code}): "
                 f"{(r.text or '')[:500]}")
+            anotar("rechazada")
             return None
         envase = (r.json() or {}).get("id")
         if not envase:
@@ -190,6 +363,7 @@ def publicar_foto(page_id, token, resultado, caption, ruta=None, log=print):
             return None
         ig_post = (r.json() or {}).get("id")
         log(f"Instagram: publicado {ig_post} en @{ficha.get('username')}.")
+        anotar("apilada")
         return ig_post
     except Exception as e:
         log(f"Instagram: falló la publicación ({e}).")
@@ -267,4 +441,29 @@ def diagnostico(page_id, token):
     except Exception as e:
         lineas.append(f"⚠️ No pude comprobar el permiso de publicación: {e}")
 
+    lineas.append(_recuento())
     return "\n".join(lineas)
+
+
+def _recuento():
+    """Cómo vienen saliendo, en números. Contesta cuántos entran apilados."""
+    try:
+        estado = json.loads(CUENTA_PATH.read_text())
+    except Exception:
+        return "\n📊 Todavía no hay ninguno para contar."
+    total = int(estado.get("total", 0))
+    if not total:
+        return "\n📊 Todavía no hay ninguno para contar."
+    apilada = int(estado.get("apilada", 0))
+    carrusel = int(estado.get("carrusel", 0))
+    salieron = apilada + carrusel
+    partes = [f"\n📊 De {total} intentos, salieron {salieron}:",
+              f"   • {apilada} como imagen apilada ({apilada * 100 // total}%)",
+              f"   • {carrusel} como carrusel ({carrusel * 100 // total}%)"]
+    fallados = total - salieron
+    if fallados:
+        detalle = ", ".join(f"{v} {k.replace('_', ' ')}"
+                            for k, v in sorted(estado.items())
+                            if k not in ("total", "apilada", "carrusel"))
+        partes.append(f"   • {fallados} no salieron ({detalle})")
+    return "\n".join(partes)

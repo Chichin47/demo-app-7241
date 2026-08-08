@@ -806,6 +806,8 @@ def guion_de_reel(edit, texto_original=""):
 
 
 def build_compose_spec(image_paths, edit, tmpdir):
+    tmpdir = Path(tmpdir)
+    tmpdir.mkdir(parents=True, exist_ok=True)
     images_spec = []
     for idx, path in enumerate(image_paths):
         lines = [
@@ -818,6 +820,36 @@ def build_compose_spec(image_paths, edit, tmpdir):
     spec_path = tmpdir / "spec.json"
     spec_path.write_text(json.dumps(spec, ensure_ascii=False))
     return spec_path
+
+
+def armar_diapositivas(image_paths, edit, tmpdir):
+    """Arma cada foto del post por separado, para el carrusel de Instagram.
+
+    Es la misma imagen de siempre pero sin apilar: una foto por diapositiva,
+    cada una con la frase que Claude le puso a ELLA. Las frases ya vienen
+    separadas por foto en la respuesta (cada una trae su image_index), así que
+    acá no se le pide nada nuevo a nadie: esto es dibujar píxeles, gratis.
+
+    Devuelve la lista de imágenes armadas. Si algo falla, devuelve lo que haya:
+    el carrusel se descarta solo si quedan menos de dos.
+    """
+    if len(image_paths) < 2:
+        return []
+    hechas = []
+    for idx, path in enumerate(image_paths):
+        # La frase de esta foto pasa a ser la de la foto 0 de su propia
+        # diapositiva, porque ahí adentro es la única que hay.
+        suyas = [dict(l, image_index=0) for l in edit.get("lines", [])
+                 if l.get("image_index") == idx]
+        try:
+            spec = build_compose_spec([path], {"lines": suyas},
+                                      tmpdir / f"dia{idx}")
+            salida = tmpdir / f"diapositiva_{idx}.jpg"
+            compose_image(spec, salida)
+            hechas.append(salida)
+        except Exception as e:
+            log(f"No pude armar la diapositiva {idx} ({e}).")
+    return hechas
 
 
 def compose_image(spec_path, out_path):
@@ -1152,9 +1184,16 @@ def process_post(post, tmpdir, allow_publish=True):
     log(f"Post {post_id} -> publicado como {backup_post_id}")
     # La misma foto y la misma descripción, ya hechas, van también a Instagram.
     # Va DESPUÉS de todo lo de Facebook y no devuelve nada que se use: si falla,
-    # el post de la página 2 ya salió y quedó anotado igual.
-    insta.publicar_foto(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP, result, caption,
-                        ruta=out_path, log=log)
+    # el post de la página 2 ya salió y quedó anotado igual. Las diapositivas
+    # solo se arman si la apilada no entra, así no se gasta trabajo al pedo.
+    try:
+        sueltas = []
+        if not insta.forma(out_path, log=lambda *a: None)[0]:
+            sueltas = armar_diapositivas(local_images, edit, tmpdir)
+        insta.publicar_foto(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP, result, caption,
+                            ruta=out_path, diapositivas=sueltas, log=log)
+    except Exception as e:
+        log(f"Instagram quedó afuera esta vez ({e}); el post ya salió igual.")
     return "published"
 
 

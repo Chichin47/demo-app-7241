@@ -1154,9 +1154,16 @@ def publish_job(job, chat_id, tmpdir):
     log(f"{key} -> publicado como {backup_post_id}")
     # Lo mismo que ya salió en la página, también a Instagram. Nunca frena esto:
     # si falla, se anota y listo, el post de Facebook ya está publicado.
-    ig_post = insta.publicar_foto(
-        bot.PAGE_ID_BACKUP, bot.PAGE_TOKEN_BACKUP, result, final_caption,
-        ruta=out_path, log=log)
+    ig_post = None
+    try:
+        sueltas = []
+        if not insta.forma(out_path, log=lambda *a: None)[0]:
+            sueltas = bot.armar_diapositivas(local_images, edit, tmpdir)
+        ig_post = insta.publicar_foto(
+            bot.PAGE_ID_BACKUP, bot.PAGE_TOKEN_BACKUP, result, final_caption,
+            ruta=out_path, diapositivas=sueltas, log=log)
+    except Exception as e:
+        log(f"Instagram quedó afuera esta vez ({e}); el post ya salió igual.")
     # Si pediste video y salió foto, hay que decirlo: si no, parece que el botón
     # no hizo nada. La foto se publica igual, nunca se pierde el post.
     aclaracion = ""
