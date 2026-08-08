@@ -27,6 +27,7 @@ import requests
 
 import poll_and_publish as bot
 import cola
+import insta
 
 BASE_DIR = Path(__file__).resolve().parent
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -102,6 +103,39 @@ def check_backup_page(page_id, token):
             add(None, "Página 2: todavía no tiene posts publicados.")
     except Exception as e:
         add(False, f"Página 2: no se pudieron leer los posts ({e}).")
+
+
+def check_instagram():
+    """Mira que Instagram siga alcanzable y, sobre todo, cuánto le queda a la llave.
+
+    Lo del vencimiento es lo importante: la llave de Instagram vence a los 60
+    días, y sin este aviso un día dejaría de publicar sin que nadie se entere.
+    """
+    if not insta.activo():
+        add(None, "Instagram: apagado a propósito (INSTAGRAM=0).")
+        return
+    try:
+        ficha = insta.cuenta(bot.PAGE_ID_BACKUP, bot.PAGE_TOKEN_BACKUP,
+                             log=lambda *a: None)
+    except Exception as e:
+        add(False, f"Instagram: no se pudo consultar ({e}).")
+        return
+    if not ficha:
+        add(False, "Instagram: no veo la cuenta vinculada. Mandá /instagram para "
+                   "ver qué falta.")
+        return
+
+    dias = insta.vencimiento(insta.token_ig(bot.PAGE_TOKEN_BACKUP))
+    detalle = f"Instagram: publico en @{ficha.get('username')}"
+    if dias is None or dias == float("inf"):
+        add(True, f"{detalle}.")
+    elif dias <= 0:
+        add(False, f"{detalle}, pero la llave YA VENCIÓ: hay que renovarla.")
+    elif dias <= 7:
+        add(False, f"{detalle}. ⚠️ A la llave le quedan {dias:.0f} días; renovala "
+                   f"antes de que se apague.")
+    else:
+        add(True, f"{detalle}. A la llave le quedan {dias:.0f} días.")
 
 
 def check_claude():
@@ -230,6 +264,7 @@ def main():
     check_ritmo()
     check_panel()
     check_claude()
+    check_instagram()
     check_telegram()
     check_cola_telegram()
 

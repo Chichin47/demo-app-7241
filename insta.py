@@ -25,6 +25,7 @@ lo que él publica se queda solo en Facebook salvo que se lo mande a mano.
 
 import json
 import os
+import time
 from pathlib import Path
 
 import requests
@@ -469,8 +470,62 @@ def diagnostico(page_id, token):
     except Exception as e:
         lineas.append(f"⚠️ No pude comprobar el permiso de publicación: {e}")
 
+    dias = vencimiento(token_ig(token))
+    if dias is None:
+        pass
+    elif dias == float("inf"):
+        lineas.append("♾️ La llave no vence.")
+    elif dias <= 0:
+        lineas.append("⛔ La llave YA VENCIÓ: hay que renovarla.")
+    elif dias <= 7:
+        lineas.append(f"⚠️ A la llave le quedan {dias:.0f} días. Conviene renovarla ya.")
+    else:
+        lineas.append(f"⏳ A la llave le quedan {dias:.0f} días.")
+
     lineas.append(_recuento())
     return "\n".join(lineas)
+
+
+def vencimiento(token):
+    """Cuándo vence la llave de Instagram, en días. None si no se puede saber.
+
+    Importa porque la llave de Instagram, a diferencia de la de la página, SÍ
+    vence: la larga dura 60 días. Sin este aviso, un día Instagram se apagaría
+    solo y nos enteraríamos por casualidad.
+    """
+    try:
+        r = requests.get(
+            f"{GRAPH}/debug_token",
+            params={"input_token": token, "access_token": token},
+            timeout=30,
+        )
+        if r.status_code >= 400:
+            return None
+        datos = ((r.json() or {}).get("data") or {})
+        vence = datos.get("expires_at")
+        if not vence:
+            # 0 significa que no vence nunca (las llaves de página son así).
+            return float("inf") if vence == 0 else None
+        return (vence - time.time()) / 86400.0
+    except Exception:
+        return None
+
+
+def aviso_de_vencimiento(token, log=print):
+    """Deja escrito en el registro cuánto le queda, y grita si queda poco."""
+    dias = vencimiento(token)
+    if dias is None:
+        return None
+    if dias == float("inf"):
+        log("Instagram: la llave no vence.")
+        return None
+    if dias <= 0:
+        log("Instagram: la llave YA VENCIÓ. Hay que renovarla.")
+    elif dias <= 7:
+        log(f"Instagram: OJO, a la llave le quedan {dias:.0f} días. Renovala.")
+    else:
+        log(f"Instagram: a la llave le quedan {dias:.0f} días.")
+    return dias
 
 
 def _recuento():
