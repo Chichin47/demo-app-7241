@@ -51,6 +51,21 @@ def activo():
     return valor not in ("0", "no", "off", "false", "")
 
 
+def token_ig(token_pagina):
+    """La llave que se usa para hablar con Instagram.
+
+    Puede ser distinta de la de Facebook, y conviene que lo sea: publicar en
+    Instagram pide dos permisos más (instagram_basic e instagram_content_publish)
+    y agregárselos a la llave que hoy publica en la página significaría
+    rehacerla, con el riesgo de dejar la página muda si algo sale mal.
+
+    Así que si existe el secreto IG_TOKEN se usa ese para Instagram, y la
+    llave de la página se queda como está, intacta. Si no existe, se prueba
+    con la de la página por si ya tuviera los permisos.
+    """
+    return (os.environ.get("IG_TOKEN") or "").strip() or token_pagina
+
+
 def cuenta(page_id, token, log=print):
     """El identificador de la cuenta de Instagram vinculada a esta página.
 
@@ -65,7 +80,7 @@ def cuenta(page_id, token, log=print):
         r = requests.get(
             f"{GRAPH}/{page_id}",
             params={"fields": "instagram_business_account{id,username}",
-                    "access_token": token},
+                    "access_token": token_ig(token)},
             timeout=30,
         )
         if r.status_code >= 400:
@@ -240,7 +255,7 @@ def _carrusel(page_id, token, ig, diapositivas, caption, log=print):
             r = requests.post(
                 f"{GRAPH}/{ig}/media",
                 data={"image_url": direccion, "is_carousel_item": "true",
-                      "access_token": token},
+                      "access_token": token_ig(token)},
                 timeout=ESPERA,
             )
             if r.status_code >= 400:
@@ -259,7 +274,7 @@ def _carrusel(page_id, token, ig, diapositivas, caption, log=print):
         r = requests.post(
             f"{GRAPH}/{ig}/media",
             data={"media_type": "CAROUSEL", "children": ",".join(hijos),
-                  "caption": caption or "", "access_token": token},
+                  "caption": caption or "", "access_token": token_ig(token)},
             timeout=ESPERA,
         )
         if r.status_code >= 400:
@@ -272,7 +287,7 @@ def _carrusel(page_id, token, ig, diapositivas, caption, log=print):
 
         r = requests.post(
             f"{GRAPH}/{ig}/media_publish",
-            data={"creation_id": envase, "access_token": token},
+            data={"creation_id": envase, "access_token": token_ig(token)},
             timeout=ESPERA,
         )
         if r.status_code >= 400:
@@ -338,7 +353,7 @@ def publicar_foto(page_id, token, resultado, caption, ruta=None,
         r = requests.post(
             f"{GRAPH}/{ig}/media",
             data={"image_url": direccion, "caption": caption or "",
-                  "access_token": token},
+                  "access_token": token_ig(token)},
             timeout=ESPERA,
         )
         if r.status_code >= 400:
@@ -354,7 +369,7 @@ def publicar_foto(page_id, token, resultado, caption, ruta=None,
         # Paso 2: se publica ese envase. Recién acá aparece en el perfil.
         r = requests.post(
             f"{GRAPH}/{ig}/media_publish",
-            data={"creation_id": envase, "access_token": token},
+            data={"creation_id": envase, "access_token": token_ig(token)},
             timeout=ESPERA,
         )
         if r.status_code >= 400:
@@ -379,12 +394,13 @@ def diagnostico(page_id, token):
     if not activo():
         return "🚫 Instagram apagado a propósito (INSTAGRAM=0 en el entorno)."
 
+    propia = bool((os.environ.get("IG_TOKEN") or "").strip())
     lineas = []
     try:
         r = requests.get(
             f"{GRAPH}/{page_id}",
             params={"fields": "name,instagram_business_account{id,username,followers_count}",
-                    "access_token": token},
+                    "access_token": token_ig(token)},
             timeout=30,
         )
         datos = r.json() if r.content else {}
@@ -394,25 +410,37 @@ def diagnostico(page_id, token):
     if r.status_code >= 400:
         error = ((datos.get("error") or {}).get("message") or "")[:300]
         lineas.append(f"❌ Facebook rechazó la consulta ({r.status_code}).")
+        lineas.append(f"🔑 Llave usada: {'IG_TOKEN (aparte)' if propia else 'la de la página'}")
         if error:
             lineas.append(f"Dice: {error}")
         lineas.append("")
-        lineas.append("Casi seguro le faltan permisos al token de la página 2. "
-                      "Hay que regenerarlo agregando instagram_basic e "
-                      "instagram_content_publish.")
+        lineas.append("Le faltan permisos: instagram_basic e "
+                      "instagram_content_publish. Generá una llave con esas dos "
+                      "casillas marcadas y guardala como secreto IG_TOKEN, así "
+                      "no hay que tocar la que hoy publica en Facebook.")
         return "\n".join(lineas)
 
     ficha = datos.get("instagram_business_account")
     lineas.append(f"📘 Página: {datos.get('name') or page_id}")
+    lineas.append(f"🔑 Llave: {'IG_TOKEN (aparte)' if propia else 'la de la página'}")
     if not ficha:
         lineas.append("")
         lineas.append("❌ No veo ninguna cuenta de Instagram vinculada.")
         lineas.append("")
-        lineas.append("Puede ser una de dos: o la vinculación no llegó a "
-                      "guardarse, o el token no tiene permiso para verla. Si en "
-                      "Business Suite la ves conectada, entonces es el token: "
-                      "hay que regenerarlo con instagram_basic e "
-                      "instagram_content_publish.")
+        if propia:
+            lineas.append("La llave IG_TOKEN llega a la página pero no ve el "
+                          "Instagram. Le faltan instagram_basic e "
+                          "instagram_content_publish; hay que generarla de nuevo "
+                          "marcando esas dos casillas.")
+        else:
+            lineas.append("Si en Business Suite la ves conectada, entonces es la "
+                          "llave: a la de la página le faltan instagram_basic e "
+                          "instagram_content_publish.")
+            lineas.append("")
+            lineas.append("No hace falta tocar la llave que hoy publica en "
+                          "Facebook: generá una nueva con esos permisos y "
+                          "guardala como secreto IG_TOKEN. Si algo sale mal, "
+                          "Facebook sigue publicando igual.")
         return "\n".join(lineas)
 
     lineas.append(f"📸 Instagram: @{ficha.get('username')} ({ficha.get('id')})")
@@ -426,12 +454,12 @@ def diagnostico(page_id, token):
     try:
         r2 = requests.get(
             f"{GRAPH}/{ficha['id']}/media",
-            params={"limit": 1, "access_token": token},
+            params={"limit": 1, "access_token": token_ig(token)},
             timeout=30,
         )
         if r2.status_code >= 400:
             detalle = ((r2.json().get("error") or {}).get("message") or "")[:300]
-            lineas.append("⚠️ La veo, pero el token no llega a su contenido.")
+            lineas.append("⚠️ La veo, pero la llave no llega a su contenido.")
             if detalle:
                 lineas.append(f"Dice: {detalle}")
             lineas.append("")
