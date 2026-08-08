@@ -215,6 +215,16 @@ jobs:
           # Voz en off de los reels. Si el secreto no está, no pasa nada malo:
           # el bot sigue publicando fotos como siempre.
           VOZ_API_KEY: ${{ secrets.VOZ_API_KEY }}
+          # Llave SOLO para Instagram. Va aparte de la de la página a propósito:
+          # publicar en Instagram pide dos permisos más (instagram_basic e
+          # instagram_content_publish) y metérselos a la llave que hoy publica
+          # en Facebook significaría rehacerla, con el riesgo de dejar la página
+          # muda. Así, si esta falla o vence, Facebook sigue igual y lo único
+          # que se pierde es la copia en Instagram. Si el secreto no está, se
+          # prueba con la de la página por si ya tuviera los permisos.
+          IG_TOKEN: ${{ secrets.IG_TOKEN }}
+          # INSTAGRAM=0 apaga la publicación en Instagram sin tocar código.
+          INSTAGRAM: ${{ vars.INSTAGRAM || '1' }}
           # Nombre de la voz clonada en el panel de ai33.pro.
           VOZ_NOMBRE: "VEXVIP"
           # La marca que decide el formato. Antes el video se repartía por
