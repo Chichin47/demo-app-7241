@@ -43,6 +43,7 @@ import requests
 
 import poll_and_publish as bot
 import cola
+import insta
 
 BASE_DIR = Path(__file__).resolve().parent
 OFFSET_PATH = BASE_DIR / "state" / "telegram_offset.json"
@@ -323,6 +324,8 @@ def que_comando(texto):
         return "revisar"
     if t.startswith("ultimo") or t in ("ultima", "ultima publicacion"):
         return "ultimo"
+    if t.startswith("instagram") or t in ("ig", "insta"):
+        return "instagram"
     if t.startswith("publicados") or t in ("publicado", "historial", "salidos"):
         return "publicados"
     if t.startswith("ayuda") or t in ("help", "comandos", "start", "menu"):
@@ -337,6 +340,7 @@ def registrar_menu_comandos():
             {"command": "cola", "description": "Ver lo que está por publicarse"},
             {"command": "revisar", "description": "Revisar que todo esté bien"},
             {"command": "ultimo", "description": "Qué publicó último y hace cuánto"},
+            {"command": "instagram", "description": "Si puede publicar en Instagram"},
             {"command": "publicados", "description": "Lo que ya salió (y pedir el video)"},
             {"command": "reiniciar", "description": "Cerrar el turno y arrancar uno limpio"},
             {"command": "ayuda", "description": "Cómo se usa el bot"},
@@ -355,6 +359,20 @@ def hace_cuanto(segundos):
     if horas < 36:
         return f"hace {horas:.1f} horas"
     return f"hace {horas / 24:.1f} días"
+
+
+def cmd_instagram(chat_id):
+    """Dice si el bot puede publicar en Instagram, y si no, qué le falta.
+
+    Está para no andar adivinando si al token le faltan permisos: se le
+    pregunta a Facebook y Facebook contesta.
+    """
+    reply(chat_id, "📸 Preguntándole a Facebook…", TECLADO_FIJO)
+    try:
+        informe = insta.diagnostico(bot.PAGE_ID_BACKUP, bot.PAGE_TOKEN_BACKUP)
+    except Exception as e:
+        informe = f"❌ No se pudo revisar: {e}"
+    reply(chat_id, informe, TECLADO_FIJO)
 
 
 def cmd_revisar(chat_id):
@@ -853,6 +871,7 @@ def atender_comandos(mensajes):
         "cola": cmd_cola,
         "revisar": cmd_revisar,
         "ultimo": cmd_ultimo,
+        "instagram": cmd_instagram,
         "publicados": cmd_publicados,
         "reiniciar": cmd_reiniciar,
         "ayuda": cmd_ayuda,
@@ -1133,11 +1152,18 @@ def publish_job(job, chat_id, tmpdir):
     bot.mark_published_now("telegram")
     bot._anotar_formato("foto")
     log(f"{key} -> publicado como {backup_post_id}")
+    # Lo mismo que ya salió en la página, también a Instagram. Nunca frena esto:
+    # si falla, se anota y listo, el post de Facebook ya está publicado.
+    ig_post = insta.publicar_foto(
+        bot.PAGE_ID_BACKUP, bot.PAGE_TOKEN_BACKUP, result, final_caption,
+        ruta=out_path, log=log)
     # Si pediste video y salió foto, hay que decirlo: si no, parece que el botón
     # no hizo nada. La foto se publica igual, nunca se pierde el post.
     aclaracion = ""
     if job.get("formato") == "reel":
         aclaracion = f"\n\n⚠️ Pediste video pero salió como foto: {motivo}."
+    if ig_post:
+        aclaracion += "\n\n📸 También salió en Instagram."
     reply(chat_id,
           f"✅ Publicado en la página.\nID: {backup_post_id}"
           f"{aclaracion}\n\nDescripción usada:\n{final_caption}")

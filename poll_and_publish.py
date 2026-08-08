@@ -31,6 +31,7 @@ import requests
 import cola
 import voz
 import video
+import insta
 import subtitulos
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -1149,6 +1150,11 @@ def process_post(post, tmpdir, allow_publish=True):
     mark_published_now("auto")
     _anotar_formato("foto")
     log(f"Post {post_id} -> publicado como {backup_post_id}")
+    # La misma foto y la misma descripción, ya hechas, van también a Instagram.
+    # Va DESPUÉS de todo lo de Facebook y no devuelve nada que se use: si falla,
+    # el post de la página 2 ya salió y quedó anotado igual.
+    insta.publicar_foto(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP, result, caption,
+                        ruta=out_path, log=log)
     return "published"
 
 
