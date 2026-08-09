@@ -44,7 +44,11 @@ ESPERA = 60
 # Cuánto se le aguanta a Instagram procesando un video antes de dar por perdido
 # el intento. Con un reel de menos de un minuto suele tardar entre 30 y 60
 # segundos; cuatro minutos es de sobra y evita que un cuelgue frene el ciclo.
-ESPERA_VIDEO = 240
+ESPERA_VIDEO = 360
+
+# Las fotos se procesan en segundos, pero "segundos" no es "al instante": hay
+# que preguntar igual antes de publicar, o Instagram devuelve el error 9007.
+ESPERA_FOTO = 90
 
 # La cuenta vinculada se pregunta una vez por corrida y queda acá. No cambia de
 # un post al otro, y preguntarla en cada publicación sería una llamada al pedo.
@@ -271,6 +275,12 @@ def _carrusel(page_id, token, ig, diapositivas, caption, log=print):
             hijo = (r.json() or {}).get("id")
             if not hijo:
                 return None
+            # Sin esta espera, Instagram contesta 9007 al publicar: el envase
+            # existe pero él todavía no terminó de bajar la foto.
+            if not _esperar_envase(hijo, token_ig(token), log=log,
+                                   espera=ESPERA_FOTO,
+                                   que_es=f"la diapositiva {n}"):
+                return None
             hijos.append(hijo)
 
         if len(hijos) < 2:
@@ -289,6 +299,9 @@ def _carrusel(page_id, token, ig, diapositivas, caption, log=print):
             return None
         envase = (r.json() or {}).get("id")
         if not envase:
+            return None
+        if not _esperar_envase(envase, token_ig(token), log=log,
+                               espera=ESPERA_FOTO, que_es="el carrusel"):
             return None
 
         r = requests.post(
@@ -369,14 +382,22 @@ def _direccion_del_video(video_id, page_id, token, ruta, log=print):
         return None, None
 
 
-def _esperar_envase(envase, token, log=print):
-    """Espera a que Instagram termine de procesar el video.
+def _esperar_envase(envase, token, log=print, espera=None, que_es="el video"):
+    """Espera a que Instagram termine de procesar lo que le mandamos.
 
-    Con las fotos el envase queda listo al instante; con video no: Instagram lo
-    baja y lo transcodifica, y publicarlo antes de que termine da error. Así que
-    se le pregunta cada 10 segundos hasta que diga FINISHED.
+    Esto NO es opcional y hay que hacerlo con TODO, no solo con el video. Meta
+    contesta el envase al instante, pero por dentro todavía está bajando y
+    procesando el archivo. Si se publica antes de tiempo devuelve el error 9007
+    ("Media ID is not available" / "el archivo multimedia no está listo para
+    publicar; espera un momento"), que es exactamente lo que estaba pasando con
+    los carruseles.
+
+    Se pregunta cada 10 segundos y se deja escrito el estado que va viendo, para
+    que la próxima vez no haya que adivinar si se colgó o si lo rechazó.
     """
-    for intento in range(ESPERA_VIDEO // 10):
+    espera = espera if espera is not None else ESPERA_VIDEO
+    ultimo = None
+    for vuelta in range(max(1, espera // 10)):
         try:
             r = requests.get(f"{GRAPH}/{envase}",
                              params={"fields": "status_code,status",
@@ -384,17 +405,19 @@ def _esperar_envase(envase, token, log=print):
                              timeout=30)
             datos = r.json() if r.content else {}
             estado = datos.get("status_code")
+            if estado != ultimo:
+                log(f"Instagram: {que_es} va en {estado}.")
+                ultimo = estado
             if estado == "FINISHED":
                 return True
             if estado == "ERROR":
-                log(f"Instagram: falló procesando el video: "
-                    f"{str(datos.get('status'))[:300]}")
+                log(f"Instagram: rechazó {que_es}: {str(datos.get('status'))[:400]}")
                 return False
         except Exception as e:
-            log(f"Instagram: no pude preguntar cómo va el video ({e}).")
+            log(f"Instagram: no pude preguntar cómo va {que_es} ({e}).")
         time.sleep(10)
-    log(f"Instagram: el video no terminó de procesarse en "
-        f"{ESPERA_VIDEO // 60} minutos; lo dejo. En Facebook ya salió.")
+    log(f"Instagram: {que_es} sigue en {ultimo} después de {espera // 60} "
+        f"minutos; lo dejo. En Facebook ya salió igual.")
     return False
 
 
@@ -523,6 +546,10 @@ def publicar_foto(page_id, token, resultado, caption, ruta=None,
         envase = (r.json() or {}).get("id")
         if not envase:
             log("Instagram: no devolvió envase para publicar.")
+            return None
+        if not _esperar_envase(envase, token_ig(token), log=log,
+                               espera=ESPERA_FOTO, que_es="la foto"):
+            anotar("foto_sin_terminar")
             return None
 
         # Paso 2: se publica ese envase. Recién acá aparece en el perfil.
