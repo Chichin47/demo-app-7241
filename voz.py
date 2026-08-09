@@ -71,7 +71,13 @@ RUTA_LISTADO = "/voices"
 # El servicio no acepta páginas más grandes que esto.
 TAMANO_MAX_PAGINA = 100
 
-TIEMPO_LIMITE = 180
+# Cuánto se le aguanta a UNA llamada. Ojo con lo que es esta llamada: solo
+# ENCARGA el audio y el servicio contesta con un número de encargo; fabricarlo
+# lleva su tiempo aparte y eso se espera después, mirando el encargo. O sea que
+# una respuesta sana llega en segundos. Esperar tres minutos por eso no sirve
+# de nada: si tarda tanto es que el servicio está caído, y lo único que se
+# consigue es perder minutos antes de volver a intentar.
+TIEMPO_LIMITE = 45
 
 # El pedido de audio NO devuelve el audio. Devuelve un número de encargo
 # ("task_id") y el servicio se pone a fabricarlo por su cuenta; hay que volver
@@ -578,7 +584,7 @@ def _bajar_marcas(enlace):
 
 
 def sintetizar(texto, salida, voz=None, velocidad=None, con_marcas=True,
-               intentos=3):
+               intentos=5):
     """Genera la voz en off y devuelve la ficha del audio.
 
     texto      -- el guion a narrar
@@ -617,8 +623,12 @@ def sintetizar(texto, salida, voz=None, velocidad=None, con_marcas=True,
         except Exception as e:
             ultimo = str(e)
         if intento < intentos:
-            espera = 4 * intento
-            log(f"Reintento {intento} en {espera}s ({ultimo}).")
+            # La espera crece rápido a propósito. Cuando el servicio se cae, se
+            # cae por un rato: volver a los 4 segundos es tocar una puerta que
+            # sigue cerrada. Así se cubren casi dos minutos con cinco intentos,
+            # que es lo que suele durar un tropiezo de estos.
+            espera = min(4 * (2 ** (intento - 1)), 60)
+            log(f"Reintento {intento} de {intentos - 1} en {espera}s ({ultimo}).")
             time.sleep(espera)
     if datos is None:
         raise ErrorDeVoz(f"El servicio de voz no respondió bien: {ultimo}")

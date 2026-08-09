@@ -859,6 +859,29 @@ def compose_image(spec_path, out_path):
     )
 
 
+def avisar(texto):
+    """Un mensaje suelto al chat de Telegram. Si no se puede, no pasa nada.
+
+    Existe para las cosas que hay que contar en el momento y que si no se
+    cuentan se pierden: sobre todo, que un post con la marca #UR terminó
+    saliendo en foto porque algo falló armando el video. Sin esto, el bot hace
+    lo correcto —publica la foto para no perder el post— pero parece que la
+    regla del #UR no funcionara.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data={"chat_id": TELEGRAM_CHAT_ID, "text": texto[:4000]},
+            timeout=30,
+        )
+        return r.status_code < 400
+    except Exception as e:
+        log(f"No se pudo avisar por Telegram ({e}).")
+        return False
+
+
 def send_telegram_preview(image_path, caption, details, post_id):
     """Manda la imagen editada + info del post a un chat de Telegram, para
     revisión manual cuando el bot está en modo seguro (DRY_RUN). No publica
@@ -1130,11 +1153,15 @@ def process_post(post, tmpdir, allow_publish=True):
     )
     log(f"Post {post_id}: sale como {formato} ({motivo}).")
     reel_path = None
+    # Si pidió video y termina en foto, hay que decirlo. Se guarda el porqué acá
+    # y se avisa recién cuando el post ya salió, para no cantar victoria antes.
+    video_caido = None
     if formato == "reel":
         try:
             reel_path = armar_reel(local_images, guion, tmpdir)
         except Exception as e:
             log(f"No se pudo armar el reel ({e}); sale como foto.")
+            video_caido = str(e)
             formato, reel_path = "foto", None
 
     if DRY_RUN:
@@ -1165,6 +1192,7 @@ def process_post(post, tmpdir, allow_publish=True):
             backup_post_id = publish_reel(reel_path, caption)
         except Exception as e:
             log(f"Falló la publicación del reel ({e}); lo publico como foto.")
+            video_caido = str(e)
             formato = "foto"
             backup_post_id = None
         if backup_post_id:
@@ -1201,6 +1229,18 @@ def process_post(post, tmpdir, allow_publish=True):
                             ruta=out_path, diapositivas=sueltas, log=log)
     except Exception as e:
         log(f"Instagram quedó afuera esta vez ({e}); el post ya salió igual.")
+
+    # Recién ahora, con el post ya publicado: si pedía video y salió foto, se
+    # avisa. Es lo único que el bot hacía bien y no contaba, y por eso parecía
+    # que la marca #UR no funcionaba.
+    if video_caido:
+        avisar(
+            f"⚠️ Este post llevaba {ETIQUETA_VIDEO} y tenía que salir en video, "
+            f"pero el video no se pudo armar y salió como foto para no perderlo.\n\n"
+            f"Motivo: {video_caido[:400]}\n\n"
+            f"La foto ya está publicada. Si querés el video igual, entrá a "
+            f"📚 Publicados y pedíselo desde ahí."
+        )
     return "published"
 
 
