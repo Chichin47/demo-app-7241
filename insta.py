@@ -326,31 +326,21 @@ def _carrusel(page_id, token, ig, diapositivas, caption, log=print):
 def _direccion_del_video(video_id, page_id, token, ruta, log=print):
     """La dirección pública del reel, para que Instagram lo vaya a buscar.
 
-    Primero se prueba la barata: pedirle a Facebook la dirección del reel que
-    ACABA de publicarse. Si no la da —con los reels a veces no la da—, se sube
-    una copia sin publicar, igual que con las diapositivas del carrusel, y esa
-    copia se borra después.
+    OJO CON EL ORDEN, que acá estuvo el error. Al principio se usaba la
+    dirección del reel ya publicado en la página, porque salía gratis. Con las
+    fotos eso funciona: la dirección que da Facebook es un .jpg de verdad, un
+    archivo suelto que cualquiera puede bajar. Con los reels no: Facebook los
+    sirve en streaming, y esa dirección no es un mp4 que Instagram pueda
+    descargarse de un saque. Por eso las fotos entraban y los videos se
+    quedaban colgados sin terminar nunca.
 
-    Devuelve (direccion, id_temporal_para_borrar). El id temporal es None
-    cuando se pudo usar la del reel ya publicado, que es el caso bueno.
+    Así que ahora primero se sube una copia SIN PUBLICAR del mismo archivo: esa
+    copia sí devuelve el mp4 original, tal cual, y es lo que Instagram necesita.
+    La copia no sale en la página, no la ve nadie, y se borra apenas termina.
+    La dirección del reel publicado queda como último recurso.
+
+    Devuelve (direccion, id_temporal_para_borrar).
     """
-    if video_id:
-        try:
-            r = requests.get(f"{GRAPH}/{video_id}",
-                             params={"fields": "source", "access_token": token},
-                             timeout=30)
-            if r.status_code < 400:
-                fuente = (r.json() or {}).get("source")
-                if fuente:
-                    return fuente, None
-            log("Instagram: Facebook no dio la dirección del reel publicado; "
-                "subo una copia aparte.")
-        except Exception as e:
-            log(f"Instagram: no pude leer la dirección del reel ({e}); "
-                f"subo una copia aparte.")
-
-    # Plan B: una copia sin publicar, solo para que Instagram tenga de dónde
-    # bajarlo. No sale en la página ni la ve nadie.
     try:
         with open(ruta, "rb") as f:
             r = requests.post(
@@ -362,10 +352,10 @@ def _direccion_del_video(video_id, page_id, token, ruta, log=print):
         if r.status_code >= 400:
             log(f"Instagram: no pude dejar la copia del video en Facebook "
                 f"({r.status_code}): {(r.text or '')[:300]}")
-            return None, None
+            return _ultimo_recurso(video_id, token, log=log), None
         copia = (r.json() or {}).get("id")
         if not copia:
-            return None, None
+            return _ultimo_recurso(video_id, token, log=log), None
         # La copia recién subida tarda un momento en tener dirección.
         for _ in range(12):
             r2 = requests.get(f"{GRAPH}/{copia}",
@@ -376,10 +366,34 @@ def _direccion_del_video(video_id, page_id, token, ruta, log=print):
                 return fuente, copia
             time.sleep(5)
         log("Instagram: la copia del video nunca tuvo dirección.")
-        return None, copia
+        return _ultimo_recurso(video_id, token, log=log), copia
     except Exception as e:
         log(f"Instagram: falló al preparar el video ({e}).")
-        return None, None
+        return _ultimo_recurso(video_id, token, log=log), None
+
+
+def _ultimo_recurso(video_id, token, log=print):
+    """La dirección del reel ya publicado. Se usa solo si la copia no salió.
+
+    Se deja como red de seguridad y no como camino principal porque es
+    justamente la que venía fallando: Facebook sirve los reels en streaming y
+    esa dirección no siempre es un archivo que Instagram pueda bajarse.
+    """
+    if not video_id:
+        return None
+    try:
+        r = requests.get(f"{GRAPH}/{video_id}",
+                         params={"fields": "source", "access_token": token},
+                         timeout=30)
+        if r.status_code < 400:
+            fuente = (r.json() or {}).get("source")
+            if fuente:
+                log("Instagram: uso la dirección del reel publicado como "
+                    "último recurso; puede que no la acepte.")
+                return fuente
+    except Exception:
+        pass
+    return None
 
 
 def _esperar_envase(envase, token, log=print, espera=None, que_es="el video"):
