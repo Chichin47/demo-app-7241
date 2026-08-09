@@ -41,6 +41,11 @@ CARRUSEL_MAXIMO = 10
 # la dirección que le pasamos, así que la primera es la más lenta de las dos.
 ESPERA = 60
 
+# Cuánto se le aguanta a Instagram procesando un video antes de dar por perdido
+# el intento. Con un reel de menos de un minuto suele tardar entre 30 y 60
+# segundos; cuatro minutos es de sobra y evita que un cuelgue frene el ciclo.
+ESPERA_VIDEO = 240
+
 # La cuenta vinculada se pregunta una vez por corrida y queda acá. No cambia de
 # un post al otro, y preguntarla en cada publicación sería una llamada al pedo.
 _CUENTA = {}
@@ -305,6 +310,159 @@ def _carrusel(page_id, token, ig, diapositivas, caption, log=print):
         _borrar_ocultas(temporales, token, log=log)
 
 
+def _direccion_del_video(video_id, page_id, token, ruta, log=print):
+    """La dirección pública del reel, para que Instagram lo vaya a buscar.
+
+    Primero se prueba la barata: pedirle a Facebook la dirección del reel que
+    ACABA de publicarse. Si no la da —con los reels a veces no la da—, se sube
+    una copia sin publicar, igual que con las diapositivas del carrusel, y esa
+    copia se borra después.
+
+    Devuelve (direccion, id_temporal_para_borrar). El id temporal es None
+    cuando se pudo usar la del reel ya publicado, que es el caso bueno.
+    """
+    if video_id:
+        try:
+            r = requests.get(f"{GRAPH}/{video_id}",
+                             params={"fields": "source", "access_token": token},
+                             timeout=30)
+            if r.status_code < 400:
+                fuente = (r.json() or {}).get("source")
+                if fuente:
+                    return fuente, None
+            log("Instagram: Facebook no dio la dirección del reel publicado; "
+                "subo una copia aparte.")
+        except Exception as e:
+            log(f"Instagram: no pude leer la dirección del reel ({e}); "
+                f"subo una copia aparte.")
+
+    # Plan B: una copia sin publicar, solo para que Instagram tenga de dónde
+    # bajarlo. No sale en la página ni la ve nadie.
+    try:
+        with open(ruta, "rb") as f:
+            r = requests.post(
+                f"{GRAPH}/{page_id}/videos",
+                files={"source": f},
+                data={"published": "false", "access_token": token},
+                timeout=600,
+            )
+        if r.status_code >= 400:
+            log(f"Instagram: no pude dejar la copia del video en Facebook "
+                f"({r.status_code}): {(r.text or '')[:300]}")
+            return None, None
+        copia = (r.json() or {}).get("id")
+        if not copia:
+            return None, None
+        # La copia recién subida tarda un momento en tener dirección.
+        for _ in range(12):
+            r2 = requests.get(f"{GRAPH}/{copia}",
+                              params={"fields": "source", "access_token": token},
+                              timeout=30)
+            fuente = (r2.json() or {}).get("source") if r2.status_code < 400 else None
+            if fuente:
+                return fuente, copia
+            time.sleep(5)
+        log("Instagram: la copia del video nunca tuvo dirección.")
+        return None, copia
+    except Exception as e:
+        log(f"Instagram: falló al preparar el video ({e}).")
+        return None, None
+
+
+def _esperar_envase(envase, token, log=print):
+    """Espera a que Instagram termine de procesar el video.
+
+    Con las fotos el envase queda listo al instante; con video no: Instagram lo
+    baja y lo transcodifica, y publicarlo antes de que termine da error. Así que
+    se le pregunta cada 10 segundos hasta que diga FINISHED.
+    """
+    for intento in range(ESPERA_VIDEO // 10):
+        try:
+            r = requests.get(f"{GRAPH}/{envase}",
+                             params={"fields": "status_code,status",
+                                     "access_token": token},
+                             timeout=30)
+            datos = r.json() if r.content else {}
+            estado = datos.get("status_code")
+            if estado == "FINISHED":
+                return True
+            if estado == "ERROR":
+                log(f"Instagram: falló procesando el video: "
+                    f"{str(datos.get('status'))[:300]}")
+                return False
+        except Exception as e:
+            log(f"Instagram: no pude preguntar cómo va el video ({e}).")
+        time.sleep(10)
+    log(f"Instagram: el video no terminó de procesarse en "
+        f"{ESPERA_VIDEO // 60} minutos; lo dejo. En Facebook ya salió.")
+    return False
+
+
+def publicar_reel(page_id, token, video_id, caption, ruta, log=print):
+    """Manda a Instagram el mismo reel que acaba de salir en la página 2.
+
+    Es el mismo archivo, ya renderizado: no se arma nada de nuevo ni se le pide
+    nada a Claude. Lo único distinto con las fotos es que Instagram necesita su
+    tiempo para bajarlo y procesarlo, así que hay que esperarlo.
+
+    Devuelve el identificador del post de Instagram, o None; nunca revienta.
+    """
+    if not activo():
+        return None
+    ficha = cuenta(page_id, token, log=log)
+    if not ficha:
+        return None
+    ig = ficha.get("id")
+
+    direccion, temporal = _direccion_del_video(video_id, page_id, token, ruta,
+                                               log=log)
+    if not direccion:
+        anotar("reel_sin_direccion")
+        return None
+    try:
+        r = requests.post(
+            f"{GRAPH}/{ig}/media",
+            data={"media_type": "REELS", "video_url": direccion,
+                  "caption": caption or "", "share_to_feed": "true",
+                  "access_token": token_ig(token)},
+            timeout=ESPERA,
+        )
+        if r.status_code >= 400:
+            log(f"Instagram: no aceptó el video ({r.status_code}): "
+                f"{(r.text or '')[:500]}")
+            anotar("reel_rechazado")
+            return None
+        envase = (r.json() or {}).get("id")
+        if not envase:
+            return None
+
+        if not _esperar_envase(envase, token_ig(token), log=log):
+            anotar("reel_sin_terminar")
+            return None
+
+        r = requests.post(
+            f"{GRAPH}/{ig}/media_publish",
+            data={"creation_id": envase, "access_token": token_ig(token)},
+            timeout=ESPERA,
+        )
+        if r.status_code >= 400:
+            log(f"Instagram: no pudo publicar el video ({r.status_code}): "
+                f"{(r.text or '')[:400]}")
+            anotar("reel_fallado")
+            return None
+        ig_post = (r.json() or {}).get("id")
+        log(f"Instagram: publicado {ig_post} como reel.")
+        anotar("reel")
+        return ig_post
+    except Exception as e:
+        log(f"Instagram: falló el video ({e}).")
+        anotar("reel_fallado")
+        return None
+    finally:
+        if temporal:
+            _borrar_ocultas([temporal], token, log=log)
+
+
 def publicar_foto(page_id, token, resultado, caption, ruta=None,
                   diapositivas=None, log=print):
     """Manda a Instagram lo mismo que acaba de salir en la página 2.
@@ -554,14 +712,17 @@ def _recuento():
         return "\n📊 Todavía no hay ninguno para contar."
     apilada = int(estado.get("apilada", 0))
     carrusel = int(estado.get("carrusel", 0))
-    salieron = apilada + carrusel
+    reel = int(estado.get("reel", 0))
+    salieron = apilada + carrusel + reel
     partes = [f"\n📊 De {total} intentos, salieron {salieron}:",
               f"   • {apilada} como imagen apilada ({apilada * 100 // total}%)",
               f"   • {carrusel} como carrusel ({carrusel * 100 // total}%)"]
+    if reel:
+        partes.append(f"   • {reel} como video ({reel * 100 // total}%)")
     fallados = total - salieron
     if fallados:
         detalle = ", ".join(f"{v} {k.replace('_', ' ')}"
                             for k, v in sorted(estado.items())
-                            if k not in ("total", "apilada", "carrusel"))
+                            if k not in ("total", "apilada", "carrusel", "reel"))
         partes.append(f"   • {fallados} no salieron ({detalle})")
     return "\n".join(partes)

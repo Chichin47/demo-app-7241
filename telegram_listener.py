@@ -1135,10 +1135,20 @@ def publish_job(job, chat_id, tmpdir):
             # video tuyo y uno automático podrían abrir igual.
             bot._anotar_arranque(guion.get("narracion") if guion else "")
             log(f"{key} -> publicado como reel {backup_post_id}")
+            # El mismo archivo también a Instagram. Nunca frena esto: el reel
+            # de Facebook ya salió y quedó anotado antes de llegar acá.
+            ig_reel = None
+            try:
+                ig_reel = insta.publicar_reel(
+                    bot.PAGE_ID_BACKUP, bot.PAGE_TOKEN_BACKUP,
+                    backup_post_id, final_caption, reel, log=log)
+            except Exception as e:
+                log(f"Instagram quedó afuera esta vez ({e}); el reel ya salió.")
             reply(
                 chat_id,
-                f"✅ Publicado como video.\nID: {backup_post_id}\n\n"
-                f"Descripción usada:\n{final_caption}",
+                f"✅ Publicado como video.\nID: {backup_post_id}"
+                + ("\n\n📸 También salió en Instagram." if ig_reel else "")
+                + f"\n\nDescripción usada:\n{final_caption}",
             )
             return
         except Exception as e:

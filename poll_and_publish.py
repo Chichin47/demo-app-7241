@@ -1174,6 +1174,13 @@ def process_post(post, tmpdir, allow_publish=True):
             # Solo cuando el video salió de verdad: así el próximo abre distinto.
             _anotar_arranque(guion.get("narracion") if guion else "")
             log(f"Post {post_id} -> publicado como reel {backup_post_id}")
+            # El mismo archivo, ya renderizado, también a Instagram. Va al final
+            # y envuelto: si falla, el reel de Facebook ya salió y quedó anotado.
+            try:
+                insta.publicar_reel(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP,
+                                    backup_post_id, caption, reel_path, log=log)
+            except Exception as e:
+                log(f"Instagram quedó afuera esta vez ({e}); el reel ya salió.")
             return "published"
 
     result = publish_photo(out_path, caption)
