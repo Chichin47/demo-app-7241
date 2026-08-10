@@ -1540,6 +1540,27 @@ def main():
                 allow_publish = False
             time.sleep(2)
 
+    # La foto de la cola se guardó ARRIBA, antes de publicar. Si en esta corrida
+    # salió algo, esa foto quedó vieja al instante y el panel seguiría mostrando
+    # el post con sus botones aunque ya no esté: uno le toca 🎬 y la orden se
+    # guarda para un post por el que el bot ya no va a volver a pasar. Así que se
+    # vuelve a guardar acá, ya sin lo que salió. No cuesta nada: es la misma
+    # lista que ya teníamos en memoria, no se le pide nada a Facebook.
+    quedan = [p for p in pendientes if p["id"] not in processed]
+    if len(quedan) != len(pendientes):
+        try:
+            cola.guardar_snapshot(
+                [resumen_para_cola(p) for p in quedan],
+                extra={
+                    "min_entre_posts": MIN_MINUTES_BETWEEN_POSTS,
+                    "minutos_desde_ultima": minutes_since_last_publish(),
+                    "total_pendientes": len(quedan),
+                },
+            )
+            cola.limpiar_control(p["id"] for p in quedan)
+        except Exception as e:
+            log(f"No se pudo actualizar la foto de la cola: {e}")
+
     if pendientes_restantes:
         log(f"Quedan {pendientes_restantes} post(s) en cola; se publicarán de a uno "
             f"cada {MIN_MINUTES_BETWEEN_POSTS:.0f} min.")

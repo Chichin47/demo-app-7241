@@ -216,10 +216,19 @@ def borrar_mensaje(chat_id, message_id):
 
 
 def answer_callback(callback_id, text=""):
+    """El globito que sale arriba del chat al tocar un botón.
+
+    Ojo: esto falla seguido con un 400, y es esperable. El bot lee Telegram
+    cada pocos minutos, así que cuando por fin contesta el globito ya venció
+    ("query is too old"). No es grave: la respuesta de verdad es la ficha, que
+    se edita aparte y esa sí llega siempre. Se anota el motivo que devuelve
+    Telegram para no quedarse con un "400" pelado en el log.
+    """
     try:
         api("answerCallbackQuery", callback_query_id=callback_id, text=text[:180])
     except Exception as e:
-        log(f"No se pudo responder el botón: {e}")
+        detalle = getattr(getattr(e, "response", None), "text", "") or ""
+        log(f"No se pudo responder el botón: {e} {detalle[:200]}".strip())
 
 
 def download_telegram_photo(file_id, dest):
@@ -1227,6 +1236,20 @@ def publicar_pendientes(jobs, tmpdir):
 # Callbacks de los botones
 # --------------------------------------------------------------------------
 
+def ya_salio(post_id):
+    """¿Este post de la página 1 ya se publicó mientras mirabas el panel?
+
+    El panel se dibuja con la foto de la cola, y esa foto se toma al principio
+    del barrido, ANTES de publicar. Si justo en ese hueco salió el post, la
+    ficha que tenés en pantalla quedó vieja: los botones siguen ahí, pero
+    apretarlos no cambiaría nada porque el bot ya pasó por ese post y no vuelve.
+    """
+    try:
+        return str(post_id) in set(bot.load_state().get("processed") or [])
+    except Exception:
+        return False
+
+
 def handle_panel_callback(cb, partes):
     """Botones del panel de cola: publicar ahora, pausar, reanudar, eliminar."""
     chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
@@ -1247,6 +1270,34 @@ def handle_panel_callback(cb, partes):
     pid = item["id"]
     n = next((k for k, i in enumerate(snap.get("items") or [], start=1)
               if i.get("clave") == clave), 1)
+
+    # Post que ya salió: se avisa y no se guarda nada. Antes el botón decía
+    # "listo" y anotaba la orden, pero esa orden no la iba a leer nadie, así
+    # que uno se quedaba esperando un video que nunca se iba a armar.
+    if accion in ("pub", "pau", "rea", "fot", "vid", "del") and ya_salio(pid):
+        answer_callback(cb["id"], "Ese post ya se publicó; el panel estaba viejo.")
+        backup_id, info = buscar_publicado(clave)
+        texto = ("✅ YA PUBLICADO — este post salió justo antes de que tocaras el "
+                 "botón, así que el panel que estabas viendo ya estaba viejo y "
+                 "esta elección no cambia nada.")
+        filas = []
+        # Si salió como foto y vos querías el video, no te mando a buscarlo:
+        # el botón de 🎞 Publicados va acá mismo, con la misma clave.
+        if info and info.get("formato") != "reel":
+            texto += ("\n\nSi lo querías en video, tocá el botón de abajo: lo armo "
+                      "de nuevo con el mismo texto y lo publico aparte. La foto que "
+                      "ya está arriba no se toca.")
+            filas.append([{"text": "🎬 Hacer video de este",
+                           "callback_data": f"v|new|{clave}"}])
+        if backup_id:
+            filas.append([{"text": "👁 Ver la publicación",
+                           "url": f"https://www.facebook.com/{backup_id}"}])
+        filas.append([{"text": "🔄 Actualizar panel", "callback_data": "k|ref"}])
+        editar_ficha(chat_id, message_id,
+                     f"{texto}\n\n«{cola.item_a_texto(item, 300)}»",
+                     {"inline_keyboard": filas})
+        log(f"Panel: {pid} ya estaba publicado; el botón «{accion}» no se aplicó.")
+        return
 
     if accion == "pub":
         cola.marcar(pid, "prioridad", True)
