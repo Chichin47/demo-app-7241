@@ -32,6 +32,11 @@ import requests
 
 GRAPH = "https://graph.facebook.com/v25.0"
 
+# Puerta por la que Instagram acepta el archivo SUBIDO, en vez de ir a buscarlo
+# a una dirección. Es la misma versión que GRAPH, sacada de ahí para que no se
+# desincronicen si un día se cambia una sola.
+SUBIDA = f"https://rupload.facebook.com/ig-api-upload/{GRAPH.rsplit('/', 1)[-1]}"
+
 CUENTA_PATH = Path(__file__).resolve().parent / "state" / "instagram.json"
 
 # Un carrusel de Instagram admite de 2 a 10 diapositivas.
@@ -435,6 +440,61 @@ def _esperar_envase(envase, token, log=print, espera=None, que_es="el video"):
     return False
 
 
+def _envase_subiendo_el_archivo(ig, token, ruta, caption, log=print):
+    """Le manda el mp4 a Instagram directamente, sin pasar por ninguna dirección.
+
+    Este es el camino bueno y es el que Meta documenta para archivos propios.
+    Se pide el envase con upload_type=resumable —que no lleva video_url— y el
+    archivo se sube a mano a rupload.facebook.com. Instagram no tiene que ir a
+    buscar nada a ningún lado: le llegan los bytes y listo.
+
+    Antes se hacía al revés: se le pasaba la dirección de una copia del video
+    guardada en Facebook, y Facebook no siempre devuelve un mp4 que se pueda
+    bajar de un saque (los sirve en streaming). De ahí venían los videos que
+    quedaban en IN_PROGRESS para siempre, y después el ERROR 2207076.
+
+    Devuelve el identificador del envase, o None si algo no salió.
+    """
+    if not ruta or not Path(ruta).exists():
+        return None
+    try:
+        r = requests.post(
+            f"{GRAPH}/{ig}/media",
+            data={"media_type": "REELS", "upload_type": "resumable",
+                  "caption": caption or "", "share_to_feed": "true",
+                  "access_token": token},
+            timeout=ESPERA,
+        )
+        if r.status_code >= 400:
+            log(f"Instagram: no me dio el envase para subir el video "
+                f"({r.status_code}): {(r.text or '')[:300]}")
+            return None
+        envase = (r.json() or {}).get("id")
+        if not envase:
+            return None
+
+        tamano = Path(ruta).stat().st_size
+        with open(ruta, "rb") as f:
+            r2 = requests.post(
+                f"{SUBIDA}/{envase}",
+                headers={"Authorization": f"OAuth {token}",
+                         "offset": "0",
+                         "file_size": str(tamano)},
+                data=f,
+                timeout=600,
+            )
+        if r2.status_code >= 400:
+            log(f"Instagram: falló la subida del archivo ({r2.status_code}): "
+                f"{(r2.text or '')[:300]}")
+            return None
+        log(f"Instagram: video subido entero ({tamano / 1048576:.1f} MB); "
+            f"ahora lo procesa.")
+        return envase
+    except Exception as e:
+        log(f"Instagram: no pude subir el archivo del video ({e}).")
+        return None
+
+
 def publicar_reel(page_id, token, video_id, caption, ruta, log=print):
     """Manda a Instagram el mismo reel que acaba de salir en la página 2.
 
@@ -451,26 +511,40 @@ def publicar_reel(page_id, token, video_id, caption, ruta, log=print):
         return None
     ig = ficha.get("id")
 
-    direccion, temporal = _direccion_del_video(video_id, page_id, token, ruta,
-                                               log=log)
-    if not direccion:
-        anotar("reel_sin_direccion")
-        return None
+    temporal = None
     try:
-        r = requests.post(
-            f"{GRAPH}/{ig}/media",
-            data={"media_type": "REELS", "video_url": direccion,
-                  "caption": caption or "", "share_to_feed": "true",
-                  "access_token": token_ig(token)},
-            timeout=ESPERA,
-        )
-        if r.status_code >= 400:
-            log(f"Instagram: no aceptó el video ({r.status_code}): "
-                f"{(r.text or '')[:500]}")
-            anotar("reel_rechazado")
-            return None
-        envase = (r.json() or {}).get("id")
+        # Camino principal: el archivo se le manda a Instagram, punto. Es el
+        # que Meta documenta para videos propios y el que no depende de que
+        # Facebook sepa servir el mp4.
+        envase = _envase_subiendo_el_archivo(ig, token_ig(token), ruta, caption,
+                                             log=log)
+
+        # Red de seguridad: el camino de antes, pasándole una dirección. Queda
+        # por si un día la subida directa no está disponible, pero es el que
+        # venía fallando, así que va segundo y no primero.
         if not envase:
+            log("Instagram: no salió la subida directa; pruebo pasándole la "
+                "dirección del video.")
+            direccion, temporal = _direccion_del_video(video_id, page_id, token,
+                                                       ruta, log=log)
+            if not direccion:
+                anotar("reel_sin_direccion")
+                return None
+            r = requests.post(
+                f"{GRAPH}/{ig}/media",
+                data={"media_type": "REELS", "video_url": direccion,
+                      "caption": caption or "", "share_to_feed": "true",
+                      "access_token": token_ig(token)},
+                timeout=ESPERA,
+            )
+            if r.status_code >= 400:
+                log(f"Instagram: no aceptó el video ({r.status_code}): "
+                    f"{(r.text or '')[:500]}")
+                anotar("reel_rechazado")
+                return None
+            envase = (r.json() or {}).get("id")
+        if not envase:
+            anotar("reel_sin_direccion")
             return None
 
         if not _esperar_envase(envase, token_ig(token), log=log):
