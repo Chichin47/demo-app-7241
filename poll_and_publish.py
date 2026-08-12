@@ -376,9 +376,34 @@ _PEDIDO_CIERRE = """
 Responde ÚNICAMENTE llamando a la herramienta submit_edit con el JSON estructurado."""
 
 
-def prompt_sistema(con_video):
+# De qué programa es el post. Esto va SOLO cuando no es el reality de siempre,
+# y es corto a propósito: Sonnet ya sabe qué es Top Chef, no hace falta
+# explicárselo ni darle un molde nuevo. Lo único que le falta es saber CUÁL es,
+# y le falta por culpa nuestra: la marca #topchefvip5 se borra del texto antes
+# de que él lo vea, así que sin esta línea lee un diálogo suelto y lo escribe
+# como si fuera La Casa de los Famosos, que es lo que ve todos los días.
+#
+# Son unas 60 palabras y solo viajan en los posts de ese programa; en los demás
+# el pedido queda exactamente igual que antes, sin un token de más.
+PROGRAMAS = {
+    "topchef": {
+        "contexto": (
+            "\nEL PROGRAMA: este post es de Top Chef VIP 5, el reality de cocina. "
+            "NO es La Casa de los Famosos y no se le parece en nada: acá se "
+            "compite cocinando, con retos, jurado y eliminaciones, no con placas "
+            "ni nominaciones. Escribí con el tono y el vocabulario de Top Chef y "
+            "elegí hashtags de Top Chef; no metas nada de La Casa de los Famosos.\n"
+        ),
+        "hashtag": "#TopChefVIP5",
+    },
+}
+
+
+def prompt_sistema(con_video, programa=None):
     """El pedido que se le manda a Claude, con o sin la parte del video."""
-    return _PEDIDO_BASE + (_PEDIDO_VIDEO if con_video else "") + _PEDIDO_CIERRE
+    extra = (PROGRAMAS.get(programa) or {}).get("contexto", "")
+    return (_PEDIDO_BASE + (_PEDIDO_VIDEO if con_video else "") + extra
+            + _PEDIDO_CIERRE)
 
 
 # Se deja armado el completo por si algo de afuera lo importa por nombre.
@@ -602,13 +627,18 @@ def _anotar_arranque(narracion):
         log(f"No se pudo anotar el arranque ({e}); sigo igual.")
 
 
-def ask_claude(original_text, num_images, manual=False, con_video=False):
+def ask_claude(original_text, num_images, manual=False, con_video=False,
+               programa=None):
     """Le pide a Claude la edición del post.
 
     con_video=True agrega la parte del pedido que explica cómo escribir el
     letrero y el guion hablado. Cuesta más o menos el doble, así que se manda
     solo cuando ya se sabe que ese post sale en video (lo decide la marca #UR o
     el botón 🎬 de la cola, y las dos cosas se saben antes de llamar).
+
+    programa dice de qué reality es el post cuando no es el de siempre. Son dos
+    líneas más y solo viajan en esos posts; con programa=None el pedido es
+    idéntico al de toda la vida.
     """
     import anthropic
 
@@ -633,7 +663,7 @@ def ask_claude(original_text, num_images, manual=False, con_video=False):
     resp = client.messages.create(
         model=model,
         max_tokens=1024,
-        system=prompt_sistema(con_video),
+        system=prompt_sistema(con_video, programa),
         tools=[herramienta(con_video)],
         tool_choice={"type": "tool", "name": "submit_edit"},
         messages=[{"role": "user", "content": user_msg}],
@@ -1091,6 +1121,17 @@ def va_aparte(texto):
     return bool(_regex_etiqueta(ETIQUETA_APARTE).search(texto or ""))
 
 
+def programa_de(texto):
+    """De qué reality es este post, si no es el de siempre.
+
+    Hoy va pegado a la marca de apartar, y es a propósito: #topchefvip5 dice las
+    dos cosas a la vez —que el post no se publica acá y que es de Top Chef—. Si
+    algún día hace falta separarlas (un programa que sí se publique, o uno que
+    se aparte sin ser Top Chef), este es el único lugar a tocar.
+    """
+    return "topchef" if va_aparte(texto) else None
+
+
 def quitar_etiqueta(texto):
     """Saca las marcas del texto: son órdenes internas, no parte del contenido.
 
@@ -1214,7 +1255,12 @@ def process_post(post, tmpdir, allow_publish=True):
     # A Claude se le manda el texto SIN la marca: es una orden para el bot, no
     # contenido, y si la viera podría terminar copiándola en la descripción.
     texto_limpio = quitar_etiqueta(text)
-    edit = ask_claude(texto_limpio, len(local_images), con_video=con_video)
+    # De qué programa es. Hay que decírselo porque la marca se borra arriba: sin
+    # esto Claude lee el diálogo suelto y lo escribe con el molde del reality de
+    # siempre, que no es el mismo mundo ni el mismo vocabulario.
+    programa = programa_de(text)
+    edit = ask_claude(texto_limpio, len(local_images), con_video=con_video,
+                      programa=programa)
     if edit.get("skip"):
         log(f"Post {post_id}: Claude decidió omitir ({edit.get('skip_reason')}).")
         return "skipped_by_ai"
@@ -1225,7 +1271,7 @@ def process_post(post, tmpdir, allow_publish=True):
 
     caption = quitar_etiqueta(acotar_preambulo(edit.get("caption", "").strip()))
     if not caption:
-        caption = "#LCDLF6"
+        caption = (PROGRAMAS.get(programa) or {}).get("hashtag", "#LCDLF6")
 
     # El mismo post puede salir como foto o como reel. La foto ya está armada
     # arriba y sirve igual de vista previa, así que el video se arma solo si le
