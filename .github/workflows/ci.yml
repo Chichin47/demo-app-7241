@@ -244,6 +244,16 @@ jobs:
           # así se quedan. El video de la página 2 se arma siempre a partir de
           # la foto del post, moviéndola; nunca se usa un clip ajeno.
           ETIQUETA_VIDEO: "#UR"
+          # La marca que APARTA el post. Si el original de la página 1 la
+          # lleva, se prepara todo igual —la imagen y la descripción, y el
+          # video si además lleva #UR— pero no se publica en ningún lado: se
+          # manda al chat de Telegram y ahí termina. Es material para otra
+          # página, que pasa por el mismo molde pero no va a la página 2.
+          #
+          # Se busca como palabra entera y se borra del texto antes de armar
+          # nada, igual que #UR. Dejándola vacía, la regla se apaga entera y
+          # todo vuelve a publicarse como siempre.
+          ETIQUETA_APARTE: "#topchefvip5"
         run: python runner.py
 
       # Guardado final del turno. El runner ya va guardando en cada ciclo;
