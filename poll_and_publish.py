@@ -913,6 +913,67 @@ def send_telegram_preview(image_path, caption, details, post_id):
         return False
 
 
+def mandar_aparte(image_path, caption, reel_path, post_id, video_caido=None,
+                  log=log):
+    """Manda al chat lo que se preparó para un post apartado, y nada más.
+
+    Va en tres mensajes a propósito. Primero la imagen con un aviso corto, para
+    que se vea de un vistazo qué es y por qué no salió. Después la descripción
+    SOLA, en un mensaje aparte y sin adornos: así se copia entera de un toque,
+    sin arrastrar el aviso ni quedar cortada por el límite de 1024 caracteres
+    que tienen los pies de foto. Y por último el video, si es que se armó.
+
+    No publica nada, no toca el reloj de publicaciones y no llama a Instagram.
+    Devuelve True si al menos la imagen llegó.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        log("Telegram no configurado; el post apartado no se pudo mandar.")
+        return False
+    base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    aviso = (f"📌 APARTADO — este post lleva {ETIQUETA_APARTE}, así que NO se "
+             f"publicó en la página 2 ni en Instagram.\n\n"
+             f"Te dejo la imagen ya armada y, en el mensaje de abajo, la "
+             f"descripción lista para copiar.")
+    if reel_path:
+        aviso += "\n\nTambién te mando el video."
+    elif video_caido:
+        aviso += (f"\n\n⚠️ Llevaba {ETIQUETA_VIDEO} y el video no se pudo armar, "
+                  f"así que va solo la foto. Motivo: {str(video_caido)[:300]}")
+    try:
+        with open(image_path, "rb") as f:
+            r = requests.post(f"{base}/sendPhoto",
+                              data={"chat_id": TELEGRAM_CHAT_ID,
+                                    "caption": aviso[:1024]},
+                              files={"photo": f}, timeout=60)
+        r.raise_for_status()
+    except Exception as e:
+        log(f"No se pudo mandar la imagen del post apartado: {e}")
+        return False
+
+    # De acá para abajo, si algo falla ya da igual: la imagen llegó y el post
+    # queda marcado. Se avisa en el log y se sigue.
+    try:
+        r = requests.post(f"{base}/sendMessage",
+                          data={"chat_id": TELEGRAM_CHAT_ID,
+                                "text": (caption or "")[:4096]}, timeout=60)
+        r.raise_for_status()
+    except Exception as e:
+        log(f"No se pudo mandar la descripción del post apartado: {e}")
+
+    if reel_path:
+        try:
+            with open(reel_path, "rb") as f:
+                r = requests.post(f"{base}/sendVideo",
+                                  data={"chat_id": TELEGRAM_CHAT_ID},
+                                  files={"video": f}, timeout=300)
+            r.raise_for_status()
+        except Exception as e:
+            log(f"No se pudo mandar el video del post apartado: {e}")
+
+    log(f"Post {post_id}: apartado y mandado al chat; no se publicó en ningún lado.")
+    return True
+
+
 def publish_photo(image_path, caption):
     url = f"https://graph.facebook.com/{GRAPH_VERSION}/{PAGE_ID_BACKUP}/photos"
     with open(image_path, "rb") as f:
@@ -997,9 +1058,17 @@ FORMATO_PATH = BASE_DIR / "state" / "formato.json"
 ETIQUETA_VIDEO = (os.environ.get("ETIQUETA_VIDEO") or "#UR").strip()
 
 
-def _regex_etiqueta():
-    """La etiqueta como palabra entera, para que #UR no se confunda con #URTV."""
-    cuerpo = re.escape(ETIQUETA_VIDEO.lstrip("#"))
+# La marca que APARTA el post: se prepara todo igual (imagen y descripción)
+# pero no se publica en ningún lado; se manda al chat de Telegram y ahí termina.
+# Sirve para material de otra página, que pasa por el mismo molde pero no va a
+# la página 2. Como ETIQUETA_VIDEO, se puede cambiar desde el ci.yml sin tocar
+# código, y dejándola vacía la regla se apaga entera.
+ETIQUETA_APARTE = (os.environ.get("ETIQUETA_APARTE") or "#topchefvip5").strip()
+
+
+def _regex_etiqueta(marca=None):
+    """La marca como palabra entera, para que #UR no se confunda con #URTV."""
+    cuerpo = re.escape((marca if marca is not None else ETIQUETA_VIDEO).lstrip("#"))
     return re.compile(rf"#\s*{cuerpo}(?![\w])", re.IGNORECASE | re.UNICODE)
 
 
@@ -1007,18 +1076,32 @@ def pide_video(texto):
     """¿El original de la página 1 trae la marca que pide video?"""
     if not ETIQUETA_VIDEO:
         return False
-    return bool(_regex_etiqueta().search(texto or ""))
+    return bool(_regex_etiqueta(ETIQUETA_VIDEO).search(texto or ""))
+
+
+def va_aparte(texto):
+    """¿Este post es para apartar en vez de publicarlo?
+
+    Se prepara igual que cualquier otro —misma imagen, misma descripción— pero
+    en vez de ir a la página 2 se manda al chat y ahí queda. No toca Facebook
+    ni Instagram ni el reloj de publicaciones.
+    """
+    if not ETIQUETA_APARTE:
+        return False
+    return bool(_regex_etiqueta(ETIQUETA_APARTE).search(texto or ""))
 
 
 def quitar_etiqueta(texto):
-    """Saca la marca del texto: es una orden interna, no parte del contenido.
+    """Saca las marcas del texto: son órdenes internas, no parte del contenido.
 
     Se limpia antes de mandarle el texto a Claude y otra vez sobre lo que Claude
-    devuelve, porque si la marca se colara en la descripción de la página 2
-    quedaría a la vista de todo el mundo un hashtag que no significa nada para
-    quien lee.
+    devuelve, porque si una marca se colara en la descripción quedaría a la
+    vista de todo el mundo un hashtag que no significa nada para quien lee.
     """
-    limpio = _regex_etiqueta().sub("", texto or "")
+    limpio = texto or ""
+    for marca in (ETIQUETA_VIDEO, ETIQUETA_APARTE):
+        if marca:
+            limpio = _regex_etiqueta(marca).sub("", limpio)
     limpio = re.sub(r"[ \t]{2,}", " ", limpio)
     limpio = re.sub(r"\n{3,}", "\n\n", limpio)
     return limpio.strip()
@@ -1186,6 +1269,15 @@ def process_post(post, tmpdir, allow_publish=True):
         log(f"[DRY_RUN] Preview guardado: {preview_img.name}. Caption: {caption}")
         send_telegram_preview(out_path, caption, details, post_id)
         return "dry_run"
+
+    # Apartado: acá se corta. Todo lo de arriba ya se hizo (la imagen está
+    # armada, la descripción escrita y, si llevaba la marca de video, el reel
+    # también), pero de acá no pasa a Facebook. Va al chat y el post queda
+    # marcado para que no vuelva a aparecer.
+    if va_aparte(text):
+        mandar_aparte(out_path, caption, reel_path, post_id,
+                      video_caido=video_caido, log=log)
+        return "apartado"
 
     if formato == "reel" and reel_path:
         try:
