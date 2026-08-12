@@ -388,8 +388,9 @@ Responde ÚNICAMENTE llamando a la herramienta submit_edit con el JSON estructur
 PROGRAMAS = {
     "topchef": {
         "contexto": (
-            "\nEL PROGRAMA: este post es de Top Chef VIP 5, el reality de cocina. "
-            "NO es La Casa de los Famosos y no se le parece en nada: acá se "
+            "\nEL PROGRAMA: este post es de Top Chef VIP 5, el reality de cocina "
+            "de Telemundo, en español. NO es La Casa de los Famosos y no se le "
+            "parece en nada: acá se "
             "compite cocinando, con retos, jurado y eliminaciones, no con placas "
             "ni nominaciones. Escribí con el tono y el vocabulario de Top Chef y "
             "elegí hashtags de Top Chef; no metas nada de La Casa de los Famosos.\n"
