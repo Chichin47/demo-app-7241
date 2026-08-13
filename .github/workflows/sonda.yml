@@ -1,0 +1,36 @@
+name: sonda scrape
+
+# Prueba de una sola llamada a ScrapeCreators, para ver si sirve como fuente de
+# la página 1 mientras la cuenta de Meta está en revisión. No publica nada, no
+# toca el estado del bot y no corre sola: solo cuando la disparás a mano.
+#
+# Gasta UN crédito por corrida.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pagina:
+        description: "Número o dirección de la página a mirar"
+        required: true
+        default: "1151125768078916"
+
+jobs:
+  sonda:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install requests
+
+      - name: Preguntar
+        env:
+          # La llave viaja en un encabezado y el script no imprime ninguna
+          # variable de entorno, así que no puede terminar en el log.
+          SCRAPE_API_KEY: ${{ secrets.SCRAPE_API_KEY }}
+          PAGINA: ${{ inputs.pagina }}
+        run: python tools/sonda_scrape.py
