@@ -47,6 +47,21 @@ PAGE_ID_BACKUP = os.environ["PAGE_ID_BACKUP"]
 PAGE_TOKEN_BACKUP = os.environ["PAGE_TOKEN_BACKUP"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
+# Llave de USUARIO, larga. Si está puesta, el bot se fabrica solo las llaves de
+# las dos páginas cada vez que arranca, y las de los secretos pasan a ser un
+# respaldo por si esta llamada falla.
+#
+# Esto existe por un problema que costó caro. Las llaves de página que da el
+# Explorador de la API son de SESIÓN: duran un par de horas y después el bot se
+# cae con "Session has expired" (código 190, subcódigo 463). Las que se piden
+# con /me/accounts usando una llave de usuario larga, en cambio, no vencen.
+#
+# Pedirlas acá tiene dos ventajas sobre pegarlas a mano: nunca se copia una
+# corta por error, y cuando toque renovar hay UNA sola llave que cambiar en vez
+# de tres. Cuesta una llamada por arranque, que al lado de todo lo demás no es
+# nada.
+USER_TOKEN = os.environ.get("USER_TOKEN", "").strip()
+
 # Opcionales: si están configurados, las previews de DRY_RUN se mandan a Telegram
 # en vez de (además de) quedar solo como artifact de GitHub Actions.
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -149,6 +164,61 @@ def graph_get(path, token, **params):
         log(f"Graph respondió {r.status_code} en /{path}: {detalle}")
     r.raise_for_status()
     return r.json()
+
+
+def _llaves_de_las_paginas():
+    """Le pide a Meta la llave de cada página, a partir de la de usuario.
+
+    Devuelve {id_de_pagina: llave} o {} si no se pudo. Nunca revienta: si esto
+    falla, el bot sigue con las llaves de los secretos, que es como funcionaba
+    antes. Peor caso, se queda igual que estaba; nunca peor.
+    """
+    if not USER_TOKEN:
+        return {}
+    try:
+        r = requests.get(
+            f"https://graph.facebook.com/{GRAPH_VERSION}/me/accounts",
+            params={"fields": "id,name,access_token", "limit": 100,
+                    "access_token": USER_TOKEN},
+            timeout=30,
+        )
+        if r.status_code >= 400:
+            log(f"No pude pedir las llaves de las páginas ({r.status_code}): "
+                f"{(r.text or '')[:300]}")
+            return {}
+        return {d["id"]: d["access_token"]
+                for d in (r.json().get("data") or [])
+                if d.get("id") and d.get("access_token")}
+    except Exception as e:
+        log(f"No pude pedir las llaves de las páginas ({e}).")
+        return {}
+
+
+def _usar_llaves_frescas():
+    """Reemplaza las llaves de las dos páginas por las que acaba de dar Meta."""
+    global PAGE_TOKEN_MAIN, PAGE_TOKEN_BACKUP
+    llaves = _llaves_de_las_paginas()
+    if not llaves:
+        if USER_TOKEN:
+            log("Sigo con las llaves de los secretos.")
+        return
+    cuales = []
+    if llaves.get(PAGE_ID_MAIN):
+        PAGE_TOKEN_MAIN = llaves[PAGE_ID_MAIN]
+        cuales.append("página 1")
+    if llaves.get(PAGE_ID_BACKUP):
+        PAGE_TOKEN_BACKUP = llaves[PAGE_ID_BACKUP]
+        cuales.append("página 2")
+    faltan = [p for p, n in ((PAGE_ID_MAIN, "página 1"), (PAGE_ID_BACKUP, "página 2"))
+              if not llaves.get(p)]
+    if cuales:
+        log(f"Llaves frescas pedidas a Meta para: {', '.join(cuales)}.")
+    if faltan:
+        log(f"Ojo: la llave de usuario no da acceso a {len(faltan)} de las dos "
+            f"páginas; para esa(s) se usa la del secreto.")
+
+
+_usar_llaves_frescas()
 
 
 def fetch_recent_posts(processed=None):
