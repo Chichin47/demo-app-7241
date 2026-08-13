@@ -243,6 +243,16 @@ jobs:
           # que se pierde es la copia en Instagram. Si el secreto no está, se
           # prueba con la de la página por si ya tuviera los permisos.
           IG_TOKEN: ${{ secrets.IG_TOKEN }}
+          # Llave de USUARIO, la larga (60 días). Con esto puesto el bot se
+          # fabrica solo las llaves de las dos páginas en cada arranque, y las
+          # de los secretos quedan de respaldo.
+          #
+          # Se agregó después de perder una mañana con esto: las llaves de
+          # página que da el Explorador de la API duran un par de horas y el bot
+          # se cae con "Session has expired" (190/463). Las que salen de
+          # /me/accounts con una llave de usuario larga no vencen. Además, ahora
+          # hay UNA sola llave que renovar cada 60 días en vez de tres.
+          USER_TOKEN: ${{ secrets.USER_TOKEN }}
           # INSTAGRAM=0 apaga la publicación en Instagram sin tocar código.
           INSTAGRAM: ${{ vars.INSTAGRAM || '1' }}
           # Nombre de la voz clonada en el panel de ai33.pro.
