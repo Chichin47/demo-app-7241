@@ -254,6 +254,22 @@ jobs:
           # nada, igual que #UR. Dejándola vacía, la regla se apaga entera y
           # todo vuelve a publicarse como siempre.
           ETIQUETA_APARTE: "#topchefvip5"
+          # FRENO DE MANO. En 1, el bot NO publica nada en automático: prepara
+          # todo igual —imagen, descripción y video si lleva #UR— y te lo manda
+          # al chat de Telegram para que lo subas a mano. Facebook e Instagram
+          # no se tocan.
+          #
+          # Hoy va en 1 a propósito: la cuenta de Meta que creó la app quedó en
+          # revisión, y con eso todas las llaves están congeladas (error 190,
+          # subcode 459). Publicar automático no es una opción hasta que se
+          # resuelva. Cuando la cuenta vuelva, se pone en 0 y todo sigue como
+          # antes. Ojo: mientras la cuenta esté congelada tampoco va a llegar
+          # nada al chat, porque el bot ni siquiera puede LEER la página 1.
+          #
+          # Se puede cambiar sin tocar el código: alcanza con crear la variable
+          # de repositorio SOLO_TELEGRAM (Settings → Secrets and variables →
+          # Actions → Variables) con el valor 0 o 1; lo que diga ahí manda.
+          SOLO_TELEGRAM: ${{ vars.SOLO_TELEGRAM || '1' }}
         run: python runner.py
 
       # Guardado final del turno. El runner ya va guardando en cada ciclo;
