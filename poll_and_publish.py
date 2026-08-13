@@ -945,7 +945,7 @@ def send_telegram_preview(image_path, caption, details, post_id):
 
 
 def mandar_aparte(image_path, caption, reel_path, post_id, video_caido=None,
-                  log=log):
+                  texto_original="", log=log):
     """Manda al chat lo que se preparó para un post apartado, y nada más.
 
     Va en tres mensajes a propósito. Primero la imagen con un aviso corto, para
@@ -961,8 +961,12 @@ def mandar_aparte(image_path, caption, reel_path, post_id, video_caido=None,
         log("Telegram no configurado; el post apartado no se pudo mandar.")
         return False
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-    aviso = (f"📌 APARTADO — este post lleva {ETIQUETA_APARTE}, así que NO se "
-             f"publicó en la página 2 ni en Instagram.\n\n"
+    motivo = (f"Este post lleva {ETIQUETA_APARTE}"
+              if lleva_marca_aparte(texto_original)
+              else "El bot está en modo solo-Telegram y hoy no publica nada en "
+                   "automático")
+    aviso = (f"📌 APARTADO — {motivo}, así que NO salió en la página 2 ni en "
+             f"Instagram.\n\n"
              f"Te dejo la imagen ya armada y, en el mensaje de abajo, la "
              f"descripción lista para copiar.")
     if reel_path:
@@ -1110,27 +1114,52 @@ def pide_video(texto):
     return bool(_regex_etiqueta(ETIQUETA_VIDEO).search(texto or ""))
 
 
+def solo_telegram():
+    """¿Está puesto el modo en que NADA se publica y todo va al chat?
+
+    Es el freno de mano. Se enciende con la variable SOLO_TELEGRAM=1 y hace que
+    todos los posts se comporten como si llevaran la marca de apartar: se
+    preparan igual —imagen, descripción y video si corresponde— pero ninguno
+    sale a Facebook ni a Instagram; llegan al chat y ahí quedan, para subirlos
+    a mano.
+
+    Se hizo para el día que la cuenta de Meta quedó en revisión: mientras eso
+    dure, publicar automático no es una opción, pero el trabajo de preparar el
+    material se puede seguir haciendo igual.
+    """
+    valor = (os.environ.get("SOLO_TELEGRAM") or "0").strip().lower()
+    return valor in ("1", "si", "sí", "on", "true", "yes")
+
+
+def lleva_marca_aparte(texto):
+    """¿El texto trae la marca de apartar (hoy #topchefvip5)?"""
+    if not ETIQUETA_APARTE:
+        return False
+    return bool(_regex_etiqueta(ETIQUETA_APARTE).search(texto or ""))
+
+
 def va_aparte(texto):
     """¿Este post es para apartar en vez de publicarlo?
 
     Se prepara igual que cualquier otro —misma imagen, misma descripción— pero
     en vez de ir a la página 2 se manda al chat y ahí queda. No toca Facebook
     ni Instagram ni el reloj de publicaciones.
+
+    Son dos motivos distintos y los dos valen: que el post traiga la marca, o
+    que esté puesto el freno de mano que aparta TODO.
     """
-    if not ETIQUETA_APARTE:
-        return False
-    return bool(_regex_etiqueta(ETIQUETA_APARTE).search(texto or ""))
+    return solo_telegram() or lleva_marca_aparte(texto)
 
 
 def programa_de(texto):
     """De qué reality es este post, si no es el de siempre.
 
-    Hoy va pegado a la marca de apartar, y es a propósito: #topchefvip5 dice las
-    dos cosas a la vez —que el post no se publica acá y que es de Top Chef—. Si
-    algún día hace falta separarlas (un programa que sí se publique, o uno que
-    se aparte sin ser Top Chef), este es el único lugar a tocar.
+    Va pegado a la MARCA, no a que el post se aparte. La diferencia importa
+    desde que existe el freno de mano: con SOLO_TELEGRAM=1 se apartan todos los
+    posts, y sería un disparate decirle a Claude que los de La Casa de los
+    Famosos son de Top Chef solo porque no se están publicando.
     """
-    return "topchef" if va_aparte(texto) else None
+    return "topchef" if lleva_marca_aparte(texto) else None
 
 
 def quitar_etiqueta(texto):
@@ -1323,7 +1352,7 @@ def process_post(post, tmpdir, allow_publish=True):
     # marcado para que no vuelva a aparecer.
     if va_aparte(text):
         mandar_aparte(out_path, caption, reel_path, post_id,
-                      video_caido=video_caido, log=log)
+                      video_caido=video_caido, texto_original=text, log=log)
         return "apartado"
 
     if formato == "reel" and reel_path:
