@@ -1591,18 +1591,86 @@ def rehacer_como_video(pedido, tmpdir):
     return True, f"https://www.facebook.com/{nuevo}"
 
 
+def rehacer_como_foto(pedido, tmpdir):
+    """Vuelve a publicar como foto un post, releyendo el original de la página 1.
+
+    Es el mismo camino que la publicación automática de fotos, solo que a
+    pedido: se descargan las fotos y el texto del original TAL COMO ESTÉN AHORA
+    —o sea que una corrección hecha en la página 1 entra acá—, Claude escribe la
+    descripción de nuevo, se arma la imagen y sale a la página 2 y a Instagram.
+
+    Existe para el día que una publicación salió mal o quedó invisible (como
+    cuando la app estuvo en modo desarrollo) y la borraste: sin esto el panel
+    solo sabía rehacer EN VIDEO, y rehacer una foto obligaba a mandarla a mano.
+    """
+    pid = str(pedido.get("source") or "")
+    if not pid:
+        return False, "el encargo no traía identificador"
+
+    post = traer_post(pid)
+    kind, images = classify_attachment(post)
+    if kind != "photo" or not images:
+        return False, "el post original ya no tiene fotos que se puedan usar"
+    text = (post.get("message") or "").strip()
+    if not text:
+        return False, "el post original no tiene texto"
+
+    local_images = []
+    for i, url in enumerate(images):
+        dest = tmpdir / f"refoto_{i}.jpg"
+        download_image(url, dest)
+        local_images.append(dest)
+
+    texto_limpio = quitar_etiqueta(text)
+    programa = programa_de(text)
+    edit = ask_claude(texto_limpio, len(local_images), con_video=False,
+                      programa=programa)
+    if edit.get("skip"):
+        return False, f"Claude prefirió no tocarlo ({edit.get('skip_reason')})"
+
+    spec_path = build_compose_spec(local_images, edit, tmpdir)
+    out_path = tmpdir / "refoto_out.jpg"
+    compose_image(spec_path, out_path)
+    caption = quitar_etiqueta(acotar_preambulo((edit.get("caption") or "").strip()))
+    if not caption:
+        caption = (PROGRAMAS.get(programa) or {}).get("hashtag", "#LCDLF6")
+
+    if DRY_RUN:
+        log(f"[DRY_RUN] Foto encargada lista para {pid}, no se publica.")
+        return True, "listo (modo de prueba: no se publicó)"
+
+    result = publish_photo(out_path, caption)
+    backup_post_id = result.get("post_id") or result.get("id")
+    record_published(backup_post_id, pid, text, caption, "foto")
+    mark_published_now("rehacer")
+    _anotar_formato("foto")
+    log(f"Encargo: {pid} -> republicado como foto {backup_post_id}")
+    try:
+        sueltas = []
+        if not insta.forma(out_path, log=lambda *a: None)[0]:
+            sueltas = armar_diapositivas(local_images, edit, tmpdir)
+        insta.publicar_foto(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP, result, caption,
+                            ruta=out_path, diapositivas=sueltas, log=log)
+    except Exception as e:
+        log(f"Instagram quedó afuera esta vez ({e}); la foto ya salió igual.")
+    return True, f"https://www.facebook.com/{backup_post_id}"
+
+
 def atender_encargos(limite=MAX_REHACER_POR_CICLO):
-    """Atiende los videos encargados desde el chat. Devuelve cuántos publicó."""
+    """Atiende los encargos del chat (videos o fotos). Devuelve cuántos publicó."""
     pendientes = cola.rehacer_pendientes()
     if not pendientes:
         return 0
-    log(f"Hay {len(pendientes)} video(s) encargado(s) desde el chat.")
+    log(f"Hay {len(pendientes)} encargo(s) desde el chat.")
     hechos = 0
     with tempfile.TemporaryDirectory() as tmp:
         for pedido in pendientes[:limite]:
             pid = pedido.get("source")
             try:
-                ok, detalle = rehacer_como_video(pedido, Path(tmp))
+                if pedido.get("formato") == "foto":
+                    ok, detalle = rehacer_como_foto(pedido, Path(tmp))
+                else:
+                    ok, detalle = rehacer_como_video(pedido, Path(tmp))
             except Exception as e:
                 ok, detalle = False, str(e)[:200]
             if ok:

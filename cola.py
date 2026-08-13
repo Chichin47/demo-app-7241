@@ -240,8 +240,14 @@ def _guardar_rehacer(pedidos):
     return _escribir(REHACER_PATH, {"pedidos": pendientes + resto})
 
 
-def pedir_video(source_post_id, publicado="", texto=""):
-    """Apunta el encargo. Si ya estaba pedido y sin atender, no duplica."""
+def pedir_video(source_post_id, publicado="", texto="", formato="reel"):
+    """Apunta el encargo. Si ya estaba pedido y sin atender, no duplica.
+
+    formato dice CÓMO se rehace: "reel" (el de siempre) o "foto". El de foto
+    existe para cuando una publicación salió mal o quedó invisible y la
+    borraste: con esto se vuelve a publicar tal como habría salido, leyendo el
+    original de la página 1 tal como esté en ese momento.
+    """
     pid = str(source_post_id)
     pedidos = leer_rehacer()
     for p in pedidos:
@@ -252,6 +258,7 @@ def pedir_video(source_post_id, publicado="", texto=""):
         "source": pid,
         "publicado": str(publicado or ""),
         "texto": (texto or "")[:MAX_TEXTO],
+        "formato": "foto" if formato == "foto" else "reel",
         "pedido": time.time(),
         "estado": "pendiente",
         "detalle": "",

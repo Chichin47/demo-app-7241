@@ -493,7 +493,7 @@ def botones_publicado(origen, info, backup_id=""):
     estado = cola.estado_video(origen)
     filas = []
     if estado == "pendiente":
-        filas.append([{"text": "✖️ Ya no quiero el video",
+        filas.append([{"text": "✖️ Cancelar el encargo",
                        "callback_data": f"v|can|{clave}"}])
     elif info.get("formato") == "reel":
         # Antes acá había un botón muerto que solo avisaba "ya salió como
@@ -506,6 +506,11 @@ def botones_publicado(origen, info, backup_id=""):
     else:
         filas.append([{"text": "🎬 Hacer video de este",
                        "callback_data": f"v|new|{clave}"}])
+        # Y el gemelo en foto: para cuando la publicación salió mal o quedó
+        # invisible y la borraste. Relee el original de la página 1 tal como
+        # esté y la vuelve a publicar como foto, acá y en Instagram.
+        filas.append([{"text": "📷 Republicar como foto (relee el original)",
+                       "callback_data": f"v|ftr|{clave}"}])
     if backup_id:
         filas.append([{"text": "👁 Ver la publicación",
                        "url": f"https://www.facebook.com/{backup_id}"}])
@@ -590,16 +595,28 @@ def handle_video_callback(cb, partes):
     if accion == "new":
         ok, motivo = cola.pedir_video(origen, backup_id, info.get("source_text") or "")
         if motivo == "ya":
-            answer_callback(cb["id"], "Ese video ya estaba pedido.")
+            answer_callback(cb["id"], "Ese encargo ya estaba pedido.")
         elif ok:
             answer_callback(cb["id"], "Listo: lo armo en el próximo barrido.")
             log(f"Publicados: video encargado para {origen}.")
         else:
             answer_callback(cb["id"], "No pude anotar el encargo; probá de nuevo.")
             return
+    elif accion == "ftr":
+        ok, motivo = cola.pedir_video(origen, backup_id,
+                                      info.get("source_text") or "",
+                                      formato="foto")
+        if motivo == "ya":
+            answer_callback(cb["id"], "Ese encargo ya estaba pedido.")
+        elif ok:
+            answer_callback(cb["id"], "Listo: la republico en el próximo barrido.")
+            log(f"Publicados: foto encargada para {origen}.")
+        else:
+            answer_callback(cb["id"], "No pude anotar el encargo; probá de nuevo.")
+            return
     elif accion == "can":
         cola.cancelar_video(origen)
-        answer_callback(cb["id"], "Cancelado: no le hago el video.")
+        answer_callback(cb["id"], "Cancelado.")
         log(f"Publicados: encargo cancelado para {origen}.")
     else:
         answer_callback(cb["id"], "Botón no reconocido.")
