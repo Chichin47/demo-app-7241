@@ -1579,6 +1579,15 @@ def rehacer_como_video(pedido, tmpdir):
     _anotar_formato("reel")
     _anotar_arranque(guion.get("narracion"))
     log(f"Encargo: {pid} -> publicado como reel {nuevo}")
+    # A Instagram también, igual que un reel de la cola normal. Faltaba: los
+    # videos encargados salían solo en Facebook y la copia de Instagram había
+    # que subirla a mano. Si Instagram falla no pasa nada: el reel de Facebook
+    # ya quedó publicado y así se avisa.
+    try:
+        insta.publicar_reel(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP, nuevo, caption,
+                            reel_path, log=log)
+    except Exception as e:
+        log(f"Instagram: no salió el video encargado ({e}).")
     return True, f"https://www.facebook.com/{nuevo}"
 
 

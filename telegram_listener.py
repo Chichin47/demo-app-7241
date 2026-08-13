@@ -464,7 +464,7 @@ def cmd_ultimo(chat_id):
 # que ya está arriba no se toca.
 
 # Cuántas publicaciones se muestran. Más que esto llena el chat de fichas.
-PUBLICADOS_MAX = 8
+PUBLICADOS_MAX = 15
 
 
 def leer_publicados():
@@ -496,8 +496,13 @@ def botones_publicado(origen, info, backup_id=""):
         filas.append([{"text": "✖️ Ya no quiero el video",
                        "callback_data": f"v|can|{clave}"}])
     elif info.get("formato") == "reel":
-        filas.append([{"text": "🎬 Este ya salió como video",
-                       "callback_data": f"v|yaes|{clave}"}])
+        # Antes acá había un botón muerto que solo avisaba "ya salió como
+        # video". Se cambió por uno que sirve: si el video salió mal y lo
+        # borraste, con esto se rearma desde el ORIGINAL de la página 1 tal
+        # como esté AHORA. O sea: corregís el texto en la página 1, tocás
+        # este botón, y el video nuevo sale con el texto corregido.
+        filas.append([{"text": "🔁 Rehacer el video (relee el original)",
+                       "callback_data": f"v|new|{clave}"}])
     else:
         filas.append([{"text": "🎬 Hacer video de este",
                        "callback_data": f"v|new|{clave}"}])
