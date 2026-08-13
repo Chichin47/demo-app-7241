@@ -74,11 +74,18 @@ def token_ig(token_pagina):
     y agregárselos a la llave que hoy publica en la página significaría
     rehacerla, con el riesgo de dejar la página muda si algo sale mal.
 
-    Así que si existe el secreto IG_TOKEN se usa ese para Instagram, y la
-    llave de la página se queda como está, intacta. Si no existe, se prueba
-    con la de la página por si ya tuviera los permisos.
+    El orden es: USER_TOKEN si está, después IG_TOKEN, y como último recurso la
+    de la página por si ya tuviera los permisos.
+
+    USER_TOKEN va primero desde que el bot se fabrica solo las llaves de las
+    páginas: es la misma llave de usuario larga que usa para eso, y ya trae
+    instagram_basic e instagram_content_publish. Así queda UNA sola llave que
+    renovar cada 60 días en vez de tres, que es de donde salían los líos.
+    IG_TOKEN se deja funcionando para no romper lo que ya estaba puesto.
     """
-    return (os.environ.get("IG_TOKEN") or "").strip() or token_pagina
+    return ((os.environ.get("USER_TOKEN") or "").strip()
+            or (os.environ.get("IG_TOKEN") or "").strip()
+            or token_pagina)
 
 
 def cuenta(page_id, token, log=print):
