@@ -620,7 +620,18 @@ def publicar_foto(page_id, token, resultado, caption, ruta=None,
         anotar("sin_camino")
         return None
 
-    direccion = _direccion_de_la_foto(resultado, token, log=log)
+    # De dónde sale la dirección de la imagen. Lo normal es del post que acaba
+    # de salir en Facebook (resultado). Pero si no hay post de Facebook —por
+    # ejemplo un encargo de "solo Instagram"— se sube una copia OCULTA a la
+    # página solo para que Instagram tenga de dónde bajarla, y se borra al
+    # final, igual que se hace con las diapositivas del carrusel.
+    temporal = None
+    if resultado:
+        direccion = _direccion_de_la_foto(resultado, token, log=log)
+    elif ruta:
+        direccion, temporal = _subir_oculta(page_id, token, ruta, log=log)
+    else:
+        direccion = None
     if not direccion:
         anotar("sin_direccion")
         return None
@@ -664,6 +675,9 @@ def publicar_foto(page_id, token, resultado, caption, ruta=None,
     except Exception as e:
         log(f"Instagram: falló la publicación ({e}).")
         return None
+    finally:
+        if temporal:
+            _borrar_ocultas([temporal], token, log=log)
 
 
 def diagnostico(page_id, token):

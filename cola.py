@@ -240,13 +240,18 @@ def _guardar_rehacer(pedidos):
     return _escribir(REHACER_PATH, {"pedidos": pendientes + resto})
 
 
-def pedir_video(source_post_id, publicado="", texto="", formato="reel"):
+def pedir_video(source_post_id, publicado="", texto="", formato="reel",
+                destino="ambos"):
     """Apunta el encargo. Si ya estaba pedido y sin atender, no duplica.
 
     formato dice CÓMO se rehace: "reel" (el de siempre) o "foto". El de foto
     existe para cuando una publicación salió mal o quedó invisible y la
     borraste: con esto se vuelve a publicar tal como habría salido, leyendo el
     original de la página 1 tal como esté en ese momento.
+
+    destino dice A DÓNDE va: "ambos" (lo normal), "fb" o "ig". Sirve para las
+    limpiezas a medias: si la copia de Instagram quedó bien y solo falta la de
+    Facebook, no tiene sentido duplicar la de Instagram, y al revés igual.
     """
     pid = str(source_post_id)
     pedidos = leer_rehacer()
@@ -259,6 +264,7 @@ def pedir_video(source_post_id, publicado="", texto="", formato="reel"):
         "publicado": str(publicado or ""),
         "texto": (texto or "")[:MAX_TEXTO],
         "formato": "foto" if formato == "foto" else "reel",
+        "destino": destino if destino in ("fb", "ig") else "ambos",
         "pedido": time.time(),
         "estado": "pendiente",
         "detalle": "",

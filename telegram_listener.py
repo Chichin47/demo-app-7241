@@ -508,7 +508,7 @@ def botones_publicado(origen, info, backup_id=""):
                        "callback_data": f"v|new|{clave}"}])
         # Y el gemelo en foto: para cuando la publicación salió mal o quedó
         # invisible y la borraste. Relee el original de la página 1 tal como
-        # esté y la vuelve a publicar como foto, acá y en Instagram.
+        # esté y la vuelve a publicar como foto.
         filas.append([{"text": "📷 Republicar como foto (relee el original)",
                        "callback_data": f"v|ftr|{clave}"}])
     if backup_id:
@@ -592,28 +592,50 @@ def handle_video_callback(cb, partes):
         return
     origen = info.get("source_post_id")
 
-    if accion == "new":
-        ok, motivo = cola.pedir_video(origen, backup_id, info.get("source_text") or "")
-        if motivo == "ya":
-            answer_callback(cb["id"], "Ese encargo ya estaba pedido.")
-        elif ok:
-            answer_callback(cb["id"], "Listo: lo armo en el próximo barrido.")
-            log(f"Publicados: video encargado para {origen}.")
-        else:
-            answer_callback(cb["id"], "No pude anotar el encargo; probá de nuevo.")
-            return
-    elif accion == "ftr":
+    if accion in ("new", "ftr"):
+        # Paso intermedio: antes de encargar se pregunta A DÓNDE va. Sirve
+        # para las limpiezas a medias, cuando una de las dos copias quedó bien
+        # y solo hay que reponer la otra.
+        es_foto = accion == "ftr"
+        que = "la foto" if es_foto else "el video"
+        answer_callback(cb["id"], f"¿A dónde mando {que}?")
+        editar_ficha(
+            chat_id, message_id,
+            f"¿A dónde va {que}?\n\nSi una de las dos copias ya está bien "
+            f"publicada, elegí solo la que falta, así no se duplica.\n\n"
+            f"«{(info.get('source_text') or '')[:250]}»",
+            {"inline_keyboard": [
+                [{"text": "🌐 Facebook e Instagram",
+                  "callback_data": f"v|{'df' if es_foto else 'dv'}|{clave}|ambos"}],
+                [{"text": "📘 Solo Facebook",
+                  "callback_data": f"v|{'df' if es_foto else 'dv'}|{clave}|fb"}],
+                [{"text": "📸 Solo Instagram",
+                  "callback_data": f"v|{'df' if es_foto else 'dv'}|{clave}|ig"}],
+                [{"text": "↩️ Mejor no", "callback_data": f"v|vol|{clave}"}],
+            ]},
+        )
+        return
+    elif accion in ("dv", "df"):
+        destino = partes[3] if len(partes) > 3 else "ambos"
+        formato = "foto" if accion == "df" else "reel"
         ok, motivo = cola.pedir_video(origen, backup_id,
                                       info.get("source_text") or "",
-                                      formato="foto")
+                                      formato=formato, destino=destino)
+        nombre = {"ambos": "Facebook e Instagram", "fb": "solo Facebook",
+                  "ig": "solo Instagram"}.get(destino, destino)
         if motivo == "ya":
             answer_callback(cb["id"], "Ese encargo ya estaba pedido.")
         elif ok:
-            answer_callback(cb["id"], "Listo: la republico en el próximo barrido.")
-            log(f"Publicados: foto encargada para {origen}.")
+            answer_callback(cb["id"], f"Listo: sale en el próximo barrido, {nombre}.")
+            log(f"Publicados: {formato} encargado para {origen} -> {destino}.")
         else:
             answer_callback(cb["id"], "No pude anotar el encargo; probá de nuevo.")
             return
+    elif accion == "vol":
+        answer_callback(cb["id"], "Listo, no encargo nada.")
+        editar_ficha(chat_id, message_id, ficha_publicado(None, backup_id, info),
+                     botones_publicado(origen, info, backup_id))
+        return
     elif accion == "can":
         cola.cancelar_video(origen)
         answer_callback(cb["id"], "Cancelado.")

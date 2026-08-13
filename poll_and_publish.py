@@ -1568,27 +1568,38 @@ def rehacer_como_video(pedido, tmpdir):
         log(f"[DRY_RUN] Reel encargado listo para {pid}, no se publica.")
         return True, "listo (modo de prueba: no se publicó)"
 
-    nuevo = publish_reel(reel_path, caption)
-    if not nuevo:
-        return False, "Facebook no devolvió el identificador del video"
-    record_published(nuevo, pid, text, caption, "reel")
-    mark_published_now("rehacer")
-    # Se cuenta igual, aunque lo hayas pedido a mano: la cuenta ya no decide
-    # nada (el formato lo decide la marca #UR), pero sirve para saber de un
-    # vistazo cuántos videos y cuántas fotos llevan.
-    _anotar_formato("reel")
-    _anotar_arranque(guion.get("narracion"))
-    log(f"Encargo: {pid} -> publicado como reel {nuevo}")
-    # A Instagram también, igual que un reel de la cola normal. Faltaba: los
-    # videos encargados salían solo en Facebook y la copia de Instagram había
-    # que subirla a mano. Si Instagram falla no pasa nada: el reel de Facebook
-    # ya quedó publicado y así se avisa.
-    try:
-        insta.publicar_reel(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP, nuevo, caption,
-                            reel_path, log=log)
-    except Exception as e:
-        log(f"Instagram: no salió el video encargado ({e}).")
-    return True, f"https://www.facebook.com/{nuevo}"
+    destino = pedido.get("destino") or "ambos"
+
+    nuevo = None
+    if destino != "ig":
+        nuevo = publish_reel(reel_path, caption)
+        if not nuevo:
+            return False, "Facebook no devolvió el identificador del video"
+        record_published(nuevo, pid, text, caption, "reel")
+        mark_published_now("rehacer")
+        # Se cuenta igual, aunque lo hayas pedido a mano: la cuenta ya no decide
+        # nada (el formato lo decide la marca #UR), pero sirve para saber de un
+        # vistazo cuántos videos y cuántas fotos llevan.
+        _anotar_formato("reel")
+        _anotar_arranque(guion.get("narracion"))
+        log(f"Encargo: {pid} -> publicado como reel {nuevo}")
+
+    ig_post = None
+    if destino != "fb":
+        # A Instagram el video va como archivo (subida directa), así que no
+        # necesita que exista el reel de Facebook: con destino "ig" se manda
+        # igual, solo que sin identificador de respaldo.
+        try:
+            ig_post = insta.publicar_reel(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP,
+                                          nuevo, caption, reel_path, log=log)
+        except Exception as e:
+            log(f"Instagram: no salió el video encargado ({e}).")
+        if destino == "ig" and not ig_post:
+            return False, "Instagram no aceptó el video; no se publicó en ningún lado"
+
+    if nuevo:
+        return True, f"https://www.facebook.com/{nuevo}"
+    return True, f"salió solo en Instagram ({ig_post})"
 
 
 def rehacer_como_foto(pedido, tmpdir):
@@ -1639,21 +1650,37 @@ def rehacer_como_foto(pedido, tmpdir):
         log(f"[DRY_RUN] Foto encargada lista para {pid}, no se publica.")
         return True, "listo (modo de prueba: no se publicó)"
 
-    result = publish_photo(out_path, caption)
-    backup_post_id = result.get("post_id") or result.get("id")
-    record_published(backup_post_id, pid, text, caption, "foto")
-    mark_published_now("rehacer")
-    _anotar_formato("foto")
-    log(f"Encargo: {pid} -> republicado como foto {backup_post_id}")
-    try:
-        sueltas = []
-        if not insta.forma(out_path, log=lambda *a: None)[0]:
-            sueltas = armar_diapositivas(local_images, edit, tmpdir)
-        insta.publicar_foto(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP, result, caption,
-                            ruta=out_path, diapositivas=sueltas, log=log)
-    except Exception as e:
-        log(f"Instagram quedó afuera esta vez ({e}); la foto ya salió igual.")
-    return True, f"https://www.facebook.com/{backup_post_id}"
+    destino = pedido.get("destino") or "ambos"
+
+    result = None
+    backup_post_id = None
+    if destino != "ig":
+        result = publish_photo(out_path, caption)
+        backup_post_id = result.get("post_id") or result.get("id")
+        record_published(backup_post_id, pid, text, caption, "foto")
+        mark_published_now("rehacer")
+        _anotar_formato("foto")
+        log(f"Encargo: {pid} -> republicado como foto {backup_post_id}")
+
+    ig_post = None
+    if destino != "fb":
+        try:
+            sueltas = []
+            if not insta.forma(out_path, log=lambda *a: None)[0]:
+                sueltas = armar_diapositivas(local_images, edit, tmpdir)
+            # Sin post de Facebook (solo-Instagram), publicar_foto sube una
+            # copia oculta desde el archivo y la borra al terminar.
+            ig_post = insta.publicar_foto(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP,
+                                          result, caption, ruta=out_path,
+                                          diapositivas=sueltas, log=log)
+        except Exception as e:
+            log(f"Instagram quedó afuera esta vez ({e}).")
+        if destino == "ig" and not ig_post:
+            return False, "Instagram no aceptó la foto; no se publicó en ningún lado"
+
+    if backup_post_id:
+        return True, f"https://www.facebook.com/{backup_post_id}"
+    return True, f"salió solo en Instagram ({ig_post})"
 
 
 def atender_encargos(limite=MAX_REHACER_POR_CICLO):
