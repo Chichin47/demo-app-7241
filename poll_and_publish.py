@@ -1100,6 +1100,13 @@ ETIQUETA_VIDEO = (os.environ.get("ETIQUETA_VIDEO") or "#UR").strip()
 # código, y dejándola vacía la regla se apaga entera.
 ETIQUETA_APARTE = (os.environ.get("ETIQUETA_APARTE") or "#topchefvip5").strip()
 
+# Cuántos apartados se preparan como máximo en un mismo barrido. No ocupan el
+# cupo de publicación —no salen a ninguna página— pero cada uno cuesta una
+# llamada a Claude y una imagen, así que conviene un techo para que un aluvión
+# no deje una corrida dando vueltas diez minutos. Lo que sobra sale en el
+# barrido siguiente, tres minutos después.
+APARTADOS_POR_CORRIDA = env_num("APARTADOS_POR_CORRIDA", 3, int)
+
 
 def _regex_etiqueta(marca=None):
     """La marca como palabra entera, para que #UR no se confunda con #URTV."""
@@ -1163,16 +1170,24 @@ def programa_de(texto):
 
 
 def quitar_etiqueta(texto):
-    """Saca las marcas del texto: son órdenes internas, no parte del contenido.
+    """Saca la marca de video del texto: es una orden interna, no contenido.
 
     Se limpia antes de mandarle el texto a Claude y otra vez sobre lo que Claude
-    devuelve, porque si una marca se colara en la descripción quedaría a la
-    vista de todo el mundo un hashtag que no significa nada para quien lee.
+    devuelve, porque si #UR se colara en la descripción quedaría a la vista de
+    todo el mundo un hashtag que no significa nada para quien lee.
+
+    Ojo con lo que NO se borra: la marca de apartar (#topchefvip5) se deja tal
+    cual. Esa sí es un hashtag de verdad, del programa, y sirve al post allá
+    donde se vuelva a publicar. Antes se borraba por simetría con #UR y estaba
+    mal: son dos cosas distintas. #UR es una orden para el bot y no significa
+    nada para nadie más; #topchefvip5 es contenido.
+
+    Efecto secundario bueno: como ahora Claude sí ve esa marca, le llega otra
+    señal más de qué programa es, además del bloque de contexto.
     """
     limpio = texto or ""
-    for marca in (ETIQUETA_VIDEO, ETIQUETA_APARTE):
-        if marca:
-            limpio = _regex_etiqueta(marca).sub("", limpio)
+    if ETIQUETA_VIDEO:
+        limpio = _regex_etiqueta(ETIQUETA_VIDEO).sub("", limpio)
     limpio = re.sub(r"[ \t]{2,}", " ", limpio)
     limpio = re.sub(r"\n{3,}", "\n\n", limpio)
     return limpio.strip()
@@ -1265,7 +1280,11 @@ def process_post(post, tmpdir, allow_publish=True):
     # poco, o ya salió uno en esta corrida), se deja pendiente tal cual: no se
     # marca como procesado ni se gasta una llamada a Claude. Sale en la
     # siguiente corrida que le toque.
-    if not allow_publish and not DRY_RUN:
+    # Los apartados no esperan turno. El espaciado existe para que la página 2
+    # no reciba varios posts de golpe, y estos no van a la página 2: van a tu
+    # chat, para que los repostees a mano en otro lado. Hacerlos esperar 10
+    # minutos era freno sin motivo.
+    if not allow_publish and not DRY_RUN and not va_aparte(text):
         log(f"Post {post_id}: publicable, pero toca esperar el turno; queda pendiente.")
         return "deferred"
 
@@ -1657,7 +1676,18 @@ def main():
     candidatos.sort(key=lambda p: (0 if p["id"] in prioridad else 1,
                                    p.get("created_time", "")))
 
-    new_posts = candidatos[:MAX_POSTS_PER_RUN]
+    # Los apartados van primero y aparte del cupo. El cupo por corrida existe
+    # para no inundar la página 2, y estos no la tocan: se preparan y se van a
+    # tu chat. Si llegan cinco de golpe, salen los cinco en el mismo barrido en
+    # vez de gotear de a uno. El tope de APARTADOS_POR_CORRIDA está para que un
+    # aluvión no haga eterna una sola vuelta; lo que sobre sale en la siguiente,
+    # tres minutos después.
+    ids_aparte = {p["id"] for p in candidatos if va_aparte(p.get("message") or "")}
+    apartados = [p for p in candidatos if p["id"] in ids_aparte][:APARTADOS_POR_CORRIDA]
+    normales = [p for p in candidatos if p["id"] not in ids_aparte]
+    if apartados:
+        log(f"{len(apartados)} apartado(s) van sin esperar turno.")
+    new_posts = apartados + normales[:MAX_POSTS_PER_RUN]
 
     if not new_posts:
         log("Sin posts nuevos." if not pendientes else
