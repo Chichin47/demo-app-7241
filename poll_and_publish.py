@@ -572,6 +572,22 @@ MANUAL_OVERRIDE = (
     "Siempre devuelve skip=false con lines, caption, titulo_reel y narracion completos."
 )
 
+APARTE_OVERRIDE = (
+    "\n\nIMPORTANTE: este post lleva la marca de apartado: no se publica en "
+    "automático, se prepara para que el administrador lo suba A MANO a otra "
+    "página. NO respondas skip=true bajo ninguna circunstancia: la regla 5 no "
+    "aplica aquí. Aunque el texto sea un anuncio, un resultado, una pregunta o "
+    "una descripción sin diálogo, igual tienes que:\n"
+    "- elegir 1-2 frases cortas y llamativas para poner sobre la(s) foto(s); si "
+    "no hay diálogo, resume la idea principal en una frase gancho de máximo "
+    "~70 caracteres;\n"
+    "- aplicar la censura tipo maquillaje donde corresponda;\n"
+    "- redactar la descripción alterna con la estructura de la regla 4 (si no "
+    "hay diálogo, solo el preámbulo reescrito y los hashtags);\n"
+    "- si la herramienta ofrece titulo_reel y narracion, llénalos igual.\n"
+    "Siempre devuelve skip=false con lines y caption completos."
+)
+
 
 # ---------------------------------------------------------------------------
 # Cómo arranca la narración
@@ -699,7 +715,7 @@ def _anotar_arranque(narracion):
 
 
 def ask_claude(original_text, num_images, manual=False, con_video=False,
-               programa=None):
+               programa=None, aparte=False):
     """Le pide a Claude la edición del post.
 
     con_video=True agrega la parte del pedido que explica cómo escribir el
@@ -721,6 +737,8 @@ def ask_claude(original_text, num_images, manual=False, con_video=False,
     )
     if manual:
         user_msg += MANUAL_OVERRIDE
+    elif aparte:
+        user_msg += APARTE_OVERRIDE
     # Va en el mensaje y no en el prompt de sistema porque cambia post a post:
     # es lo único de todo el pedido que depende de lo que ya se publicó antes.
     # Solo sirve para variar el arranque de la narración, así que en los posts
@@ -1015,7 +1033,7 @@ def send_telegram_preview(image_path, caption, details, post_id):
 
 
 def mandar_aparte(image_path, caption, reel_path, post_id, video_caido=None,
-                  texto_original="", log=log):
+                  texto_original="", log=log, nota=None):
     """Manda al chat lo que se preparó para un post apartado, y nada más.
 
     Va en tres mensajes a propósito. Primero la imagen con un aviso corto, para
@@ -1044,6 +1062,8 @@ def mandar_aparte(image_path, caption, reel_path, post_id, video_caido=None,
     elif video_caido:
         aviso += (f"\n\n⚠️ Llevaba {ETIQUETA_VIDEO} y el video no se pudo armar, "
                   f"así que va solo la foto. Motivo: {str(video_caido)[:300]}")
+    if nota:
+        aviso += "\n\n" + nota
     try:
         with open(image_path, "rb") as f:
             r = requests.post(f"{base}/sendPhoto",
@@ -1378,9 +1398,25 @@ def process_post(post, tmpdir, allow_publish=True):
     # esto Claude lee el diálogo suelto y lo escribe con el molde del reality de
     # siempre, que no es el mismo mundo ni el mismo vocabulario.
     programa = programa_de(text)
+    # Los apartados van al chat para subida manual: ahí decide el administrador,
+    # no el filtro editorial, así que a Claude se le prohíbe omitirlos.
+    es_aparte = va_aparte(text)
     edit = ask_claude(texto_limpio, len(local_images), con_video=con_video,
-                      programa=programa)
+                      programa=programa, aparte=es_aparte)
     if edit.get("skip"):
+        if es_aparte:
+            # Red de seguridad: no debería pasar con el pedido reforzado, pero
+            # si igual lo omite, al chat va la foto original con el texto tal
+            # cual. Peor sería que el apartado se pierda en silencio.
+            log(f"Post {post_id}: Claude quiso omitirlo "
+                f"({edit.get('skip_reason')}), pero es apartado: va igual al "
+                f"chat con la foto y el texto originales.")
+            mandar_aparte(local_images[0], quitar_etiqueta(text), None, post_id,
+                          texto_original=text, log=log,
+                          nota=("⚠️ Claude no encontró diálogo aprovechable, "
+                                "así que va la foto original sin editar y el "
+                                "texto tal cual."))
+            return "apartado"
         log(f"Post {post_id}: Claude decidió omitir ({edit.get('skip_reason')}).")
         return "skipped_by_ai"
 
