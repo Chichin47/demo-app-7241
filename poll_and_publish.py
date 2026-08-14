@@ -1032,6 +1032,44 @@ def send_telegram_preview(image_path, caption, details, post_id):
         return False
 
 
+def consultar_sin_dialogo(image_path, texto_original, post_id, motivo, log=log):
+    """Cuando un post normal no trae diálogo, en vez de descartarlo en
+    silencio se te pregunta por Telegram qué hacer: sacarlo como foto, como
+    video, o dejarlo fuera. Los botones encargan por el mismo camino que el
+    panel de publicados (cola.pedir_video), así que al elegir sale en el
+    próximo barrido con la frase gancho y la reseña armadas igual.
+
+    El post queda marcado como procesado: la consulta se manda UNA sola vez.
+    Devuelve True si el mensaje llegó al chat.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        log("Telegram no configurado; no se pudo consultar el post sin diálogo.")
+        return False
+    base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    aviso = (f"🤔 SIN DIÁLOGO — Claude no encontró diálogo aprovechable, así "
+             f"que este post NO salió solo. Motivo: {str(motivo or '')[:250]}\n\n"
+             f"¿Lo saco igual?\n\n"
+             f"— Texto original —\n{(texto_original or '')[:550]}")
+    botones = {"inline_keyboard": [
+        [{"text": "📷 Sacarlo como foto", "callback_data": f"s|f|{post_id}"}],
+        [{"text": "🎬 Sacarlo como video", "callback_data": f"s|v|{post_id}"}],
+        [{"text": "🗑 Dejarlo fuera", "callback_data": "s|x"}],
+    ]}
+    try:
+        with open(image_path, "rb") as f:
+            r = requests.post(f"{base}/sendPhoto",
+                              data={"chat_id": TELEGRAM_CHAT_ID,
+                                    "caption": aviso[:1024],
+                                    "reply_markup": json.dumps(botones)},
+                              files={"photo": f}, timeout=60)
+        r.raise_for_status()
+        log(f"Post {post_id}: sin diálogo; se preguntó por Telegram qué hacer.")
+        return True
+    except Exception as e:
+        log(f"No se pudo consultar el post sin diálogo: {e}")
+        return False
+
+
 def mandar_aparte(image_path, caption, reel_path, post_id, video_caido=None,
                   texto_original="", log=log, nota=None):
     """Manda al chat lo que se preparó para un post apartado, y nada más.
@@ -1417,7 +1455,12 @@ def process_post(post, tmpdir, allow_publish=True):
                                 "así que va la foto original sin editar y el "
                                 "texto tal cual."))
             return "apartado"
-        log(f"Post {post_id}: Claude decidió omitir ({edit.get('skip_reason')}).")
+        # Post normal sin diálogo: ya no se descarta en silencio. Se te
+        # pregunta por Telegram si lo querés como foto, como video o fuera.
+        log(f"Post {post_id}: Claude decidió omitir ({edit.get('skip_reason')}); "
+            f"se consulta por Telegram.")
+        consultar_sin_dialogo(local_images[0], text, post_id,
+                              edit.get("skip_reason"), log=log)
         return "skipped_by_ai"
 
     spec_path = build_compose_spec(local_images, edit, tmpdir)
@@ -1586,9 +1629,13 @@ def rehacer_como_video(pedido, tmpdir):
         download_image(url, dest)
         local_images.append(dest)
 
-    # Acá el video no se discute: es un encargo tuyo, así que se pide el guion.
+    # Acá el video no se discute: es un encargo tuyo, así que se pide el guion
+    # con manual=True (Claude no puede negarse aunque no haya diálogo) y con el
+    # programa correcto para que el mood sea el del reality que toca.
     texto_limpio = quitar_etiqueta(text)
-    edit = ask_claude(texto_limpio, len(local_images), con_video=True)
+    programa = programa_de(text)
+    edit = ask_claude(texto_limpio, len(local_images), con_video=True,
+                      programa=programa, manual=True)
     if edit.get("skip"):
         return False, f"Claude prefirió no tocarlo ({edit.get('skip_reason')})"
 
@@ -1670,8 +1717,10 @@ def rehacer_como_foto(pedido, tmpdir):
 
     texto_limpio = quitar_etiqueta(text)
     programa = programa_de(text)
+    # manual=True: es un encargo tuyo, así que Claude no puede negarse aunque
+    # el post no traiga diálogo; arma frase gancho y reseña igual.
     edit = ask_claude(texto_limpio, len(local_images), con_video=False,
-                      programa=programa)
+                      programa=programa, manual=True)
     if edit.get("skip"):
         return False, f"Claude prefirió no tocarlo ({edit.get('skip_reason')})"
 

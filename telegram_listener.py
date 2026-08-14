@@ -575,6 +575,45 @@ def cmd_publicados(chat_id):
     log(f"Panel de publicados: {len(ultimos)} ficha(s).")
 
 
+def handle_sin_dialogo_callback(cb, partes):
+    """Botones de la consulta 🤔 SIN DIÁLOGO: cuando Claude no encontró diálogo
+    en un post nuevo, el bot pregunta en vez de descartar. Elegir foto o video
+    encarga por cola.pedir_video (el mismo camino que el panel de publicados),
+    así que sale en el próximo barrido; "dejarlo fuera" simplemente cierra la
+    ficha y el post queda descartado como antes."""
+    chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
+    message_id = cb.get("message", {}).get("message_id")
+    modo = partes[1] if len(partes) > 1 else ""
+
+    if modo == "x":
+        answer_callback(cb["id"], "Descartado.")
+        editar_ficha(chat_id, message_id,
+                     "🗑 Descartado: este post no sale en ningún lado.")
+        return
+
+    origen = partes[2] if len(partes) > 2 else ""
+    if modo not in ("f", "v") or not origen:
+        answer_callback(cb["id"], "No entendí ese botón.")
+        return
+
+    formato = "foto" if modo == "f" else "reel"
+    ok, estado = cola.pedir_video(origen, formato=formato)
+    if not ok and estado == "ya":
+        answer_callback(cb["id"], "Ya estaba encargado.")
+        editar_ficha(chat_id, message_id,
+                     "⏳ Ya estaba encargado; sale en el próximo barrido.")
+        return
+    if not ok:
+        answer_callback(cb["id"], "No se pudo anotar el encargo.")
+        return
+    que = "foto" if formato == "foto" else "video"
+    answer_callback(cb["id"], f"Listo: sale como {que}.")
+    editar_ficha(chat_id, message_id,
+                 f"✅ Encargado como {que}: sale en el próximo barrido "
+                 f"(~3 min) hacia la página 2 e Instagram.")
+    log(f"Sin diálogo {origen}: encargado como {que} desde el chat.")
+
+
 def handle_video_callback(cb, partes):
     """Botones de 🎞 Publicados: encargar o cancelar el video de algo ya salido."""
     chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
@@ -1452,6 +1491,9 @@ def handle_callback(cb, jobs):
         return
     if accion == "v":
         handle_video_callback(cb, partes)
+        return
+    if accion == "s":
+        handle_sin_dialogo_callback(cb, partes)
         return
 
     key = partes[1] if len(partes) > 1 else ""
