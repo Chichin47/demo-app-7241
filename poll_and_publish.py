@@ -1032,6 +1032,43 @@ def send_telegram_preview(image_path, caption, details, post_id):
         return False
 
 
+def mandar_video_al_chat(reel_path, caption, enlace=None, log=log):
+    """Manda al chat el MISMO video que se acaba de publicar, con su
+    descripción en un mensaje aparte para copiar de un toque.
+
+    No cuesta tokens: el archivo ya está renderizado (es el que salió en la
+    página 2 y en Instagram); esto es solo un envío más por Telegram, para
+    tenerlo a mano y poder subirlo a otro lado. Si algo falla acá, no pasa
+    nada: la publicación ya salió, se anota en el log y se sigue.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+    base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    aviso = "🎬 Copia del video que acaba de salir."
+    if enlace:
+        aviso += f"\n{enlace}"
+    try:
+        with open(reel_path, "rb") as f:
+            r = requests.post(f"{base}/sendVideo",
+                              data={"chat_id": TELEGRAM_CHAT_ID,
+                                    "caption": aviso[:1024],
+                                    "supports_streaming": True},
+                              files={"video": f}, timeout=180)
+        r.raise_for_status()
+    except Exception as e:
+        log(f"No se pudo mandar la copia del video al chat: {e}")
+        return False
+    try:
+        if caption:
+            requests.post(f"{base}/sendMessage",
+                          data={"chat_id": TELEGRAM_CHAT_ID,
+                                "text": caption[:4096]}, timeout=30)
+    except Exception as e:
+        log(f"La copia del video llegó, pero la descripción no: {e}")
+    log("Copia del video mandada al chat.")
+    return True
+
+
 def consultar_sin_dialogo(image_path, texto_original, post_id, motivo, log=log):
     """Cuando un post normal no trae diálogo, en vez de descartarlo en
     silencio se te pregunta por Telegram qué hacer: sacarlo como foto, como
@@ -1545,6 +1582,10 @@ def process_post(post, tmpdir, allow_publish=True):
                                     backup_post_id, caption, reel_path, log=log)
             except Exception as e:
                 log(f"Instagram quedó afuera esta vez ({e}); el reel ya salió.")
+            # El mismo archivo, de regalo al chat: cero tokens, solo un envío.
+            mandar_video_al_chat(reel_path, caption,
+                                 f"https://www.facebook.com/{backup_post_id}",
+                                 log=log)
             return "published"
 
     result = publish_photo(out_path, caption)
@@ -1679,6 +1720,11 @@ def rehacer_como_video(pedido, tmpdir):
             log(f"Instagram: no salió el video encargado ({e}).")
         if destino == "ig" and not ig_post:
             return False, "Instagram no aceptó el video; no se publicó en ningún lado"
+
+    # También acá va la copia al chat: es el mismo archivo ya renderizado.
+    mandar_video_al_chat(reel_path, caption,
+                         f"https://www.facebook.com/{nuevo}" if nuevo else None,
+                         log=log)
 
     if nuevo:
         return True, f"https://www.facebook.com/{nuevo}"
