@@ -503,6 +503,10 @@ def botones_publicado(origen, info, backup_id=""):
         # este botón, y el video nuevo sale con el texto corregido.
         filas.append([{"text": "🔁 Rehacer el video (relee el original)",
                        "callback_data": f"v|new|{clave}"}])
+        # Reenvía al chat el MISMO archivo que ya está publicado, sin
+        # regenerar nada: lo baja de Facebook y lo manda por Telegram.
+        filas.append([{"text": "📤 Mandar el video al chat",
+                       "callback_data": f"v|snd|{clave}"}])
     else:
         filas.append([{"text": "🎬 Hacer video de este",
                        "callback_data": f"v|new|{clave}"}])
@@ -630,6 +634,21 @@ def handle_video_callback(cb, partes):
         answer_callback(cb["id"], "Ya no tengo el registro de esa publicación.")
         return
     origen = info.get("source_post_id")
+
+    if accion == "snd":
+        # Reenviar el video publicado al chat: va por la misma cola de
+        # encargos, pero con formato "chat" (no publica nada, solo manda).
+        ok, motivo = cola.pedir_video(origen, backup_id,
+                                      info.get("source_text") or "",
+                                      formato="chat")
+        if motivo == "ya":
+            answer_callback(cb["id"], "Ya estaba pedido; sale en el próximo barrido.")
+        elif ok:
+            answer_callback(cb["id"], "Listo: te mando el video en el próximo barrido (~3 min).")
+            log(f"Publicados: reenvío al chat encargado para {origen}.")
+        else:
+            answer_callback(cb["id"], "No pude anotar el pedido; probá de nuevo.")
+        return
 
     if accion in ("new", "ftr"):
         # Paso intermedio: antes de encargar se pregunta A DÓNDE va. Sirve

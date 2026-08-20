@@ -263,7 +263,9 @@ def pedir_video(source_post_id, publicado="", texto="", formato="reel",
         "source": pid,
         "publicado": str(publicado or ""),
         "texto": (texto or "")[:MAX_TEXTO],
-        "formato": "foto" if formato == "foto" else "reel",
+        # "reel" y "foto" republican; "chat" solo reenvía al chat el video ya
+        # publicado (lo baja de Facebook y lo manda por Telegram, sin tokens).
+        "formato": formato if formato in ("foto", "chat") else "reel",
         "destino": destino if destino in ("fb", "ig") else "ambos",
         "pedido": time.time(),
         "estado": "pendiente",

@@ -1827,6 +1827,8 @@ def atender_encargos(limite=MAX_REHACER_POR_CICLO):
             try:
                 if pedido.get("formato") == "foto":
                     ok, detalle = rehacer_como_foto(pedido, Path(tmp))
+                elif pedido.get("formato") == "chat":
+                    ok, detalle = reenviar_video_al_chat(pedido, Path(tmp))
                 else:
                     ok, detalle = rehacer_como_video(pedido, Path(tmp))
             except Exception as e:
@@ -1841,6 +1843,45 @@ def atender_encargos(limite=MAX_REHACER_POR_CICLO):
                 cola.cerrar_video(pid, "error", detalle)
                 log(f"Encargo {pid}: no se pudo ({detalle}).")
     return hechos
+
+
+def reenviar_video_al_chat(pedido, tmpdir):
+    """Reenvía al chat el video YA PUBLICADO de la página 2, tal cual salió.
+
+    No regenera nada ni llama a Claude: le pide a Facebook el archivo del
+    video con la llave de la página, lo baja y lo manda por Telegram junto
+    con la descripción que tiene guardada. Sirve para recuperar videos que
+    salieron antes de que existiera la copia automática al chat, o para
+    volver a pedir uno viejo.
+    """
+    vid = str(pedido.get("publicado") or "")
+    if not vid:
+        return False, "no tengo anotado el identificador del video publicado"
+    # El nodo de video en Graph es el número final (a veces viene PAGINA_VIDEO).
+    video_id = vid.split("_")[-1]
+    try:
+        data = graph_get(video_id, PAGE_TOKEN_BACKUP, fields="source")
+    except Exception as e:
+        return False, f"Facebook no dio el video ({str(e)[:150]})"
+    src = data.get("source")
+    if not src:
+        return False, "Facebook no entregó el archivo del video (¿lo borraste?)"
+    ruta = tmpdir / "reenviar.mp4"
+    r = requests.get(src, timeout=180)
+    r.raise_for_status()
+    ruta.write_bytes(r.content)
+    # La descripción real quedó guardada cuando se publicó.
+    caption = pedido.get("texto") or ""
+    try:
+        if PUBLISHED_MAP_PATH.exists():
+            info = json.loads(PUBLISHED_MAP_PATH.read_text()).get(vid) or {}
+            caption = info.get("caption") or caption
+    except Exception:
+        pass
+    if mandar_video_al_chat(ruta, caption, f"https://www.facebook.com/{vid}",
+                            log=log):
+        return True, "el video ya está en el chat"
+    return False, "Telegram no aceptó el video"
 
 
 def record_published(backup_post_id, source_post_id, source_text, caption,
