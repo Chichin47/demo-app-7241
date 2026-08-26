@@ -181,15 +181,15 @@ jobs:
           # dice a insta.py dónde buscar la cuenta vinculada.
           echo "IG_PAGINA=179820098545682" >> "$GITHUB_ENV"
 
-      # Página 2 (la que PUBLICA): Universo Reality (61582825765616), la del
+      # Página 2 (la que PUBLICA): Universo Reality (901214443065966), la del
       # respaldo original. Su llave no está en ningún secreto suelto: sale de
       # las llaves frescas que el bot deriva de USER_TOKEN al arrancar. Para
       # eso el USER_TOKEN tiene que estar emitido con esta página concedida a
       # la app (re-consentimiento en el Explorador al agregarla).
       - name: Pagina 2
         run: |
-          echo "PAGE_ID_BACKUP=61582825765616" >> "$GITHUB_ENV"
-          echo "Página 2 (publica): Universo Reality (61582825765616)."
+          echo "PAGE_ID_BACKUP=901214443065966" >> "$GITHUB_ENV"
+          echo "Página 2 (publica): Universo Reality (901214443065966)."
 
       # Siempre se parte de la ÚLTIMA versión del estado que hay en el
       # repositorio, no de la del commit con el que arrancó este turno.
