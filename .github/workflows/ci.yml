@@ -159,42 +159,37 @@ jobs:
           echo "MIN_MINUTES_BETWEEN_POSTS=10" >> "$GITHUB_ENV"
           echo "Separación mínima entre publicaciones: 10 min."
 
-      # Página 1 (la que se lee). La llave de esta página venía adentro del
-      # sobre cifrado, y cambiarla obligaba a rehacer el sobre entero. Con esto
-      # se puede reemplazar sola, en un secreto suelto, igual que la de la
-      # página 2: se pega PAGE1_TOKEN y pisa a la del sobre.
-      #
-      # Se hizo cuando la cuenta que había generado las llaves quedó en
-      # revisión y hubo que emitirlas de nuevo desde otro perfil. Si el secreto
-      # no está, no pasa nada: sigue valiendo la del sobre, como toda la vida.
+      # Página 1 (la que se LEE). Cambio de agosto 2026: la fuente ahora es
+      # Universo Reality Tv Mexico Lives; la vieja Info 24/7 quedó fuera del
+      # sistema. Como llave de respaldo sirve el secreto PAGE2_TOKEN, que
+      # guarda justamente la llave de Mexico Lives (de cuando era la página
+      # que publicaba). Al arrancar, el bot igual pide llaves frescas con
+      # USER_TOKEN, y esas son las que mandan.
       - name: Pagina 1
-        env:
-          PAGE1_TOKEN: ${{ secrets.PAGE1_TOKEN }}
-        run: |
-          if [ -n "$PAGE1_TOKEN" ]; then
-            echo "::add-mask::$PAGE1_TOKEN"
-            echo "PAGE_TOKEN_MAIN=$PAGE1_TOKEN" >> "$GITHUB_ENV"
-            echo "Página 1: usando la llave del secreto PAGE1_TOKEN."
-          else
-            echo "Sin secreto PAGE1_TOKEN: se usa la llave del sobre."
-          fi
-
-      # Página 2 (la que recibe y publica). El número de la página va a la
-      # vista porque no es secreto; la llave viene del secreto PAGE2_TOKEN.
-      # Van juntos a propósito: si falta la llave NO se cambia la página, así
-      # nunca se intenta publicar en la página nueva con la llave vieja.
-      - name: Pagina 2
         env:
           PAGE2_TOKEN: ${{ secrets.PAGE2_TOKEN }}
         run: |
+          echo "PAGE_ID_MAIN=179820098545682" >> "$GITHUB_ENV"
+          echo "Página 1 (origen): Universo Reality Tv Mexico Lives (179820098545682)."
           if [ -n "$PAGE2_TOKEN" ]; then
             echo "::add-mask::$PAGE2_TOKEN"
-            echo "PAGE_ID_BACKUP=179820098545682" >> "$GITHUB_ENV"
-            echo "PAGE_TOKEN_BACKUP=$PAGE2_TOKEN" >> "$GITHUB_ENV"
-            echo "Página 2: Universo Reality Tv Mexico Lives (179820098545682)."
-          else
-            echo "Sin secreto PAGE2_TOKEN: se queda la página 2 anterior."
+            echo "PAGE_TOKEN_MAIN=$PAGE2_TOKEN" >> "$GITHUB_ENV"
+            echo "Página 1: llave de respaldo tomada del secreto PAGE2_TOKEN."
           fi
+          # Instagram sigue siendo @universorealityvip, que está vinculado a
+          # Mexico Lives. Como esa página ya no es la que publica, acá se le
+          # dice a insta.py dónde buscar la cuenta vinculada.
+          echo "IG_PAGINA=179820098545682" >> "$GITHUB_ENV"
+
+      # Página 2 (la que PUBLICA): Universo Reality (61582825765616), la del
+      # respaldo original. Su llave no está en ningún secreto suelto: sale de
+      # las llaves frescas que el bot deriva de USER_TOKEN al arrancar. Para
+      # eso el USER_TOKEN tiene que estar emitido con esta página concedida a
+      # la app (re-consentimiento en el Explorador al agregarla).
+      - name: Pagina 2
+        run: |
+          echo "PAGE_ID_BACKUP=61582825765616" >> "$GITHUB_ENV"
+          echo "Página 2 (publica): Universo Reality (61582825765616)."
 
       # Siempre se parte de la ÚLTIMA versión del estado que hay en el
       # repositorio, no de la del commit con el que arrancó este turno.
