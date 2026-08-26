@@ -164,7 +164,12 @@ def graph_get(path, token, **params):
         log(f"Graph respondió {r.status_code} en /{path}: {detalle}")
         # Si la llave dejó de servir, se tira la copia guardada para que el
         # próximo barrido vuelva a pedirlas y no quede media hora fallando.
-        if '"code":190' in detalle.replace(" ", "") or "OAuthException" in detalle:
+        apretado = detalle.replace(" ", "")
+        if '"code":4' in apretado or "request limit reached" in detalle:
+            anotar_tope_de_cupo()
+            log(f"Meta cortó por tope de llamadas: me tomo "
+                f"{PAUSA_CUPO_MINUTOS:.0f} min sin pedirle nada.")
+        elif '"code":190' in apretado:
             olvidar_llaves()
     r.raise_for_status()
     return r.json()
@@ -209,6 +214,38 @@ def olvidar_llaves():
         pass
 
 
+# Cuando Meta contesta "llegaste al tope de llamadas" (error 4), seguir
+# intentando cada tres minutos es contraproducente: los intentos fallidos
+# también cuentan, así que el bot se queda trabado solo. Con esto se toma un
+# recreo: durante ese rato no le pide NADA a Meta y el contador se vacía.
+PAUSA_CUPO = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()) / "urtv_pausa_cupo"
+PAUSA_CUPO_MINUTOS = env_num("PAUSA_CUPO_MINUTOS", 20, float)
+
+
+def anotar_tope_de_cupo():
+    """Deja anotado que Meta cortó por cupo, para frenar un rato."""
+    try:
+        PAUSA_CUPO.write_text(str(time.time()))
+    except Exception:
+        pass
+
+
+def minutos_de_pausa():
+    """Cuántos minutos faltan del recreo por cupo. Cero si no hay recreo."""
+    try:
+        desde = float(PAUSA_CUPO.read_text().strip())
+    except Exception:
+        return 0.0
+    faltan = PAUSA_CUPO_MINUTOS - (time.time() - desde) / 60.0
+    if faltan <= 0:
+        try:
+            PAUSA_CUPO.unlink()
+        except Exception:
+            pass
+        return 0.0
+    return faltan
+
+
 def _llaves_de_las_paginas():
     """Le pide a Meta la llave de cada página, a partir de la de usuario.
 
@@ -228,6 +265,8 @@ def _llaves_de_las_paginas():
         if r.status_code >= 400:
             log(f"No pude pedir las llaves de las páginas ({r.status_code}): "
                 f"{(r.text or '')[:300]}")
+            if "request limit reached" in (r.text or ""):
+                anotar_tope_de_cupo()
             return {}
         return {d["id"]: d["access_token"]
                 for d in (r.json().get("data") or [])
@@ -255,6 +294,8 @@ def _llave_suelta(page_id):
         if r.status_code >= 400:
             log(f"Tampoco pude pedir la llave suelta de {page_id} "
                 f"({r.status_code}): {(r.text or '')[:200]}")
+            if "request limit reached" in (r.text or ""):
+                anotar_tope_de_cupo()
             return None
         return (r.json() or {}).get("access_token")
     except Exception as e:
@@ -270,6 +311,10 @@ def _usar_llaves_frescas():
     tres minutos no consume el cupo de llamadas por hora.
     """
     global PAGE_TOKEN_MAIN, PAGE_TOKEN_BACKUP
+    espera = minutos_de_pausa()
+    if espera:
+        # En recreo por cupo no se le pide nada a Meta, ni siquiera las llaves.
+        return
     guardadas = _llaves_guardadas()
     if guardadas:
         if guardadas.get(PAGE_ID_MAIN):
@@ -2035,6 +2080,12 @@ def run_test_mode():
 def main():
     if os.environ.get("BOT_ENABLED", "true").lower() == "false":
         log("BOT_ENABLED=false: el bot está apagado, no se hace nada.")
+        return
+
+    espera = minutos_de_pausa()
+    if espera:
+        log(f"En pausa por el tope de llamadas de Meta: vuelvo en "
+            f"{espera:.0f} min. No se pierde nada, los posts esperan.")
         return
 
     if os.environ.get("TEST_MODE", "false").lower() == "true":
