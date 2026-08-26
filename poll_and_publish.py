@@ -162,8 +162,51 @@ def graph_get(path, token, **params):
         # el token, el permiso o el id. El cuerpo de la respuesta sí lo dice.
         detalle = (r.text or "")[:800]
         log(f"Graph respondió {r.status_code} en /{path}: {detalle}")
+        # Si la llave dejó de servir, se tira la copia guardada para que el
+        # próximo barrido vuelva a pedirlas y no quede media hora fallando.
+        if '"code":190' in detalle.replace(" ", "") or "OAuthException" in detalle:
+            olvidar_llaves()
     r.raise_for_status()
     return r.json()
+
+
+# Las llaves de las páginas se guardan un rato para no volver a pedírselas a
+# Meta en cada barrido. Motivo: Meta cuenta las llamadas de la última hora y el
+# tope es bajo; pedir las llaves 40 veces por hora (dos programas × veinte
+# barridos) se comía casi todo el cupo sin necesidad, porque son llaves que no
+# caducan. El archivo vive FUERA del repositorio (carpeta temporal del turno):
+# nunca se sube a ningún lado y desaparece cuando el turno termina.
+CACHE_LLAVES = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()) / "urtv_llaves.json"
+CACHE_LLAVES_MINUTOS = env_num("CACHE_LLAVES_MINUTOS", 40, float)
+
+
+def _llaves_guardadas():
+    """Las llaves del archivo temporal, si todavía están frescas."""
+    try:
+        if not CACHE_LLAVES.exists():
+            return None
+        guardado = json.loads(CACHE_LLAVES.read_text())
+        if time.time() - float(guardado.get("ts") or 0) > CACHE_LLAVES_MINUTOS * 60:
+            return None
+        llaves = guardado.get("llaves") or {}
+        return llaves or None
+    except Exception:
+        return None
+
+
+def _guardar_llaves(llaves):
+    try:
+        CACHE_LLAVES.write_text(json.dumps({"ts": time.time(), "llaves": llaves}))
+    except Exception as e:
+        log(f"No pude guardar las llaves para reusarlas ({e}); no es grave.")
+
+
+def olvidar_llaves():
+    """Tira el archivo de llaves: la próxima vez se piden de nuevo."""
+    try:
+        CACHE_LLAVES.unlink()
+    except Exception:
+        pass
 
 
 def _llaves_de_las_paginas():
@@ -220,8 +263,20 @@ def _llave_suelta(page_id):
 
 
 def _usar_llaves_frescas():
-    """Reemplaza las llaves de las dos páginas por las que acaba de dar Meta."""
+    """Reemplaza las llaves de las dos páginas por las que acaba de dar Meta.
+
+    Primero mira el archivo temporal: si las llaves de hace un rato siguen
+    sirviendo, se usan esas y no se le pide NADA a Meta. Así el barrido cada
+    tres minutos no consume el cupo de llamadas por hora.
+    """
     global PAGE_TOKEN_MAIN, PAGE_TOKEN_BACKUP
+    guardadas = _llaves_guardadas()
+    if guardadas:
+        if guardadas.get(PAGE_ID_MAIN):
+            PAGE_TOKEN_MAIN = guardadas[PAGE_ID_MAIN]
+        if guardadas.get(PAGE_ID_BACKUP):
+            PAGE_TOKEN_BACKUP = guardadas[PAGE_ID_BACKUP]
+        return
     llaves = _llaves_de_las_paginas()
     # Lo que no vino en la lista se pide de a una: así entran las páginas de la
     # nueva experiencia, que la lista no muestra.
@@ -246,7 +301,9 @@ def _usar_llaves_frescas():
     faltan = [p for p, n in ((PAGE_ID_MAIN, "página 1"), (PAGE_ID_BACKUP, "página 2"))
               if not llaves.get(p)]
     if cuales:
-        log(f"Llaves frescas pedidas a Meta para: {', '.join(cuales)}.")
+        log(f"Llaves frescas pedidas a Meta para: {', '.join(cuales)} "
+            f"(se guardan {CACHE_LLAVES_MINUTOS:.0f} min para no repetir).")
+        _guardar_llaves(llaves)
     if faltan:
         log(f"Ojo: la llave de usuario no da acceso a {len(faltan)} de las dos "
             f"páginas; para esa(s) se usa la del secreto.")
