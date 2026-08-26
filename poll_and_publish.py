@@ -1955,6 +1955,22 @@ def main():
 
     posts = fetch_recent_posts(processed)
 
+    # Fuente nueva: si en el registro no hay NADA de esta página, es que la
+    # página 1 acaba de cambiar. Lo que ya está publicado ahí es viejo (o del
+    # propio bot, de cuando era la página que publicaba), así que se anota
+    # todo como ya visto SIN publicar nada. Desde el barrido siguiente solo
+    # entra lo que se publique de ahí en adelante.
+    prefijo = f"{PAGE_ID_MAIN}_"
+    if posts and processed and not any(p.startswith(prefijo) for p in processed):
+        for p in posts:
+            processed.add(p["id"])
+        state["processed"] = sorted(processed)
+        save_state(state)
+        log(f"Página de origen nueva: {len(posts)} publicación(es) existentes "
+            f"quedan anotadas como ya vistas y NO se publican. Desde ahora "
+            f"solo entra lo nuevo.")
+        return
+
     if os.environ.get("DEBUG", "false").lower() == "true":
         log(f"DEBUG: {len(posts)} posts recibidos de la API.")
         for p in posts:

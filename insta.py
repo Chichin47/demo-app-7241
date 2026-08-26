@@ -94,7 +94,15 @@ def cuenta(page_id, token, log=print):
     Devuelve None si no hay ninguna vinculada, o si el token no alcanza para
     verla (que es el caso más probable la primera vez: hay que regenerarlo con
     los permisos instagram_basic e instagram_content_publish).
+
+    Con IG_PAGINA en el entorno se busca la cuenta vinculada a ESA página en
+    vez de a la que publica. Existe porque la página que publica puede cambiar
+    y el Instagram quedarse: hoy @universorealityvip está vinculado a Mexico
+    Lives aunque quien publica en Facebook sea otra página.
     """
+    forzada = (os.environ.get("IG_PAGINA") or "").strip()
+    if forzada:
+        page_id = forzada
     if page_id in _CUENTA:
         return _CUENTA[page_id]
     ficha = None
