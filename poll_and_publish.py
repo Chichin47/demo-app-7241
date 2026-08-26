@@ -194,10 +194,44 @@ def _llaves_de_las_paginas():
         return {}
 
 
+def _llave_suelta(page_id):
+    """La llave de UNA página, preguntándole directo por ella.
+
+    Existe porque las páginas de la "nueva experiencia" a veces no salen en la
+    lista de /me/accounts aunque la app sí tenga acceso: pidiéndoselas de a una
+    por su número, la llave aparece igual. Es el plan B de la lista.
+    """
+    if not USER_TOKEN or not page_id:
+        return None
+    try:
+        r = requests.get(
+            f"https://graph.facebook.com/{GRAPH_VERSION}/{page_id}",
+            params={"fields": "access_token", "access_token": USER_TOKEN},
+            timeout=30,
+        )
+        if r.status_code >= 400:
+            log(f"Tampoco pude pedir la llave suelta de {page_id} "
+                f"({r.status_code}): {(r.text or '')[:200]}")
+            return None
+        return (r.json() or {}).get("access_token")
+    except Exception as e:
+        log(f"Tampoco pude pedir la llave suelta de {page_id} ({e}).")
+        return None
+
+
 def _usar_llaves_frescas():
     """Reemplaza las llaves de las dos páginas por las que acaba de dar Meta."""
     global PAGE_TOKEN_MAIN, PAGE_TOKEN_BACKUP
     llaves = _llaves_de_las_paginas()
+    # Lo que no vino en la lista se pide de a una: así entran las páginas de la
+    # nueva experiencia, que la lista no muestra.
+    for pid in (PAGE_ID_MAIN, PAGE_ID_BACKUP):
+        if pid and not llaves.get(pid):
+            suelta = _llave_suelta(pid)
+            if suelta:
+                llaves[pid] = suelta
+                log(f"Llave de {pid} conseguida pidiéndola directo "
+                    f"(no salía en la lista de páginas).")
     if not llaves:
         if USER_TOKEN:
             log("Sigo con las llaves de los secretos.")
