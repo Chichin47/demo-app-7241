@@ -194,7 +194,13 @@ def _llaves_guardadas():
         if time.time() - float(guardado.get("ts") or 0) > CACHE_LLAVES_MINUTOS * 60:
             return None
         llaves = guardado.get("llaves") or {}
-        return llaves or None
+        # Solo sirve si están LAS DOS. Si falta una (porque ese día Meta no
+        # la dio), se vuelve a preguntar: así, apenas se arregla el permiso
+        # de esa página, el bot lo nota en el barrido siguiente y no queda
+        # esperando de gusto a que caduque la copia guardada.
+        if not (llaves.get(PAGE_ID_MAIN) and llaves.get(PAGE_ID_BACKUP)):
+            return None
+        return llaves
     except Exception:
         return None
 
@@ -346,9 +352,15 @@ def _usar_llaves_frescas():
     faltan = [p for p, n in ((PAGE_ID_MAIN, "página 1"), (PAGE_ID_BACKUP, "página 2"))
               if not llaves.get(p)]
     if cuales:
-        log(f"Llaves frescas pedidas a Meta para: {', '.join(cuales)} "
-            f"(se guardan {CACHE_LLAVES_MINUTOS:.0f} min para no repetir).")
-        _guardar_llaves(llaves)
+        # Se guardan solo si vinieron las dos: una copia a medias haría que el
+        # bot se quede con la llave vieja de la que falta durante 40 minutos.
+        completas = bool(llaves.get(PAGE_ID_MAIN) and llaves.get(PAGE_ID_BACKUP))
+        log(f"Llaves frescas pedidas a Meta para: {', '.join(cuales)}"
+            + (f" (se guardan {CACHE_LLAVES_MINUTOS:.0f} min para no repetir)."
+               if completas else " (falta una, así que se vuelven a pedir"
+                                 " en el próximo barrido)."))
+        if completas:
+            _guardar_llaves(llaves)
     if faltan:
         log(f"Ojo: la llave de usuario no da acceso a {len(faltan)} de las dos "
             f"páginas; para esa(s) se usa la del secreto.")
