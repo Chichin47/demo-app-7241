@@ -19,7 +19,7 @@ sys.path.insert(0, str(BASE))
 for llave, valor in [
     ("PAGE_ID_MAIN", "1"), ("PAGE_TOKEN_MAIN", "x"),
     ("PAGE_ID_BACKUP", "2"), ("PAGE_TOKEN_BACKUP", "x"),
-    ("ANTHROPIC_API_KEY", "x"),
+    ("CLAUDE_CODE_OAUTH_TOKEN", "x"),
     ("TELEGRAM_BOT_TOKEN", "0:prueba"), ("TELEGRAM_CHAT_ID", "1"),
     ("TZ_OFFSET_HOURS", "-5"), ("MIN_MINUTES_BETWEEN_POSTS", "10"),
 ]:
