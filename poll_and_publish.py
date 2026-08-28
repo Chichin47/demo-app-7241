@@ -1121,9 +1121,15 @@ def _correr_claude_code(system, pedido):
         leido = int(u.get("cache_read_input_tokens") or 0)
         salida = int(u.get("output_tokens") or 0)
         segundos = float(envase.get("duration_ms") or 0) / 1000.0
-        log(f"[plan] Claude: {suelto + escrito + leido:,} tokens de entrada "
-            f"({leido:,} leídos de memoria, {escrito:,} guardados, {suelto:,} "
-            f"sueltos) y {salida:,} de salida, en {segundos:.1f}s.")
+        # Qué modelo contestó de verdad. Se anota el que informa Claude Code,
+        # no el que se pidió: se pide "sonnet" a secas para que sea siempre el
+        # Sonnet vigente y no haya que tocar el código cuando salga uno nuevo,
+        # pero entonces conviene dejar por escrito cuál resolvió ser.
+        usados = envase.get("modelUsage") or {}
+        modelo = ", ".join(sorted(usados)) or (os.environ.get("CLAUDE_MODEL") or "sonnet")
+        log(f"[plan] Claude ({modelo}): {suelto + escrito + leido:,} tokens de "
+            f"entrada ({leido:,} leídos de memoria, {escrito:,} guardados, "
+            f"{suelto:,} sueltos) y {salida:,} de salida, en {segundos:.1f}s.")
     except Exception:  # noqa: BLE001
         pass  # el contador nunca puede romper una publicación
 
