@@ -159,33 +159,36 @@ jobs:
           echo "MIN_MINUTES_BETWEEN_POSTS=10" >> "$GITHUB_ENV"
           echo "Separación mínima entre publicaciones: 10 min."
 
-      # Página 1 (la que se LEE, donde escribís los originales). Segundo cambio
-      # de agosto 2026: se dieron vuelta las dos páginas. Ahora la fuente es
-      # Universo Reality, la chica, que funciona como cuaderno de borradores.
-      # Su llave no está en ningún secreto suelto: sale de las llaves frescas
-      # que el bot deriva de USER_TOKEN al arrancar.
+      # Página 1 (la que se LEE, donde escribís los originales): Universo
+      # Reality Tv Mexico Lives, que además es donde cuelga el Instagram.
+      # Como respaldo sirve el secreto PAGE2_TOKEN, que guarda su llave; al
+      # arrancar el bot igual pide llaves frescas con USER_TOKEN y esas mandan.
+      #
+      # Cada vez que se cambia cuál es la página 1, el bot anota como "ya
+      # vistas" las publicaciones que esa página ya tenía, para no republicar
+      # lo viejo ni lo que él mismo dejó ahí cuando era el destino.
       - name: Pagina 1
-        run: |
-          echo "PAGE_ID_MAIN=901214443065966" >> "$GITHUB_ENV"
-          echo "Página 1 (origen, donde escribís): Universo Reality (901214443065966)."
-
-      # Página 2 (la que PUBLICA, la cara visible): Universo Reality Tv Mexico
-      # Lives, que es la grande y la que tiene el Instagram colgado. Como
-      # respaldo sirve el secreto PAGE2_TOKEN, que guarda justamente su llave.
-      - name: Pagina 2
         env:
           PAGE2_TOKEN: ${{ secrets.PAGE2_TOKEN }}
         run: |
-          echo "PAGE_ID_BACKUP=179820098545682" >> "$GITHUB_ENV"
-          echo "Página 2 (publica): Universo Reality Tv Mexico Lives (179820098545682)."
+          echo "PAGE_ID_MAIN=179820098545682" >> "$GITHUB_ENV"
+          echo "Página 1 (origen, donde escribís): Universo Reality Tv Mexico Lives (179820098545682)."
           if [ -n "$PAGE2_TOKEN" ]; then
             echo "::add-mask::$PAGE2_TOKEN"
-            echo "PAGE_TOKEN_BACKUP=$PAGE2_TOKEN" >> "$GITHUB_ENV"
-            echo "Página 2: llave de respaldo tomada del secreto PAGE2_TOKEN."
+            echo "PAGE_TOKEN_MAIN=$PAGE2_TOKEN" >> "$GITHUB_ENV"
           fi
           # Instagram (@universorealityvip) cuelga de Mexico Lives, que ahora
-          # vuelve a ser la que publica: la cuenta se busca en la misma página.
+          # vuelve a ser la que se lee: la cuenta se busca en esta misma página.
           echo "IG_PAGINA=179820098545682" >> "$GITHUB_ENV"
+
+      # Página 2 (la que PUBLICA): Universo Reality. Su llave no está en ningún
+      # secreto suelto: sale de las llaves frescas que el bot deriva de
+      # USER_TOKEN al arrancar, pidiéndola de a una porque esta página no
+      # aparece en la lista general de Facebook.
+      - name: Pagina 2
+        run: |
+          echo "PAGE_ID_BACKUP=901214443065966" >> "$GITHUB_ENV"
+          echo "Página 2 (publica): Universo Reality (901214443065966)."
 
       # Siempre se parte de la ÚLTIMA versión del estado que hay en el
       # repositorio, no de la del commit con el que arrancó este turno.
