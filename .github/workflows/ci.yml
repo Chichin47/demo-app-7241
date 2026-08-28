@@ -98,6 +98,20 @@ jobs:
         continue-on-error: true
         run: sudo timeout 120 apt-get install -y -qq fonts-noto-color-emoji || true
 
+      # Claude Code es lo que ahora escribe las descripciones y los guiones,
+      # usando la llave de la suscripción en vez de la de la API. Sin esto el
+      # bot no puede armar el texto de ningún post.
+      #
+      # NO va con continue-on-error, a diferencia de ffmpeg: sin ffmpeg los
+      # posts salen en foto y el bot sigue vivo, pero sin Claude no hay ni
+      # descripción ni frase sobre la imagen, o sea que no hay post. Mejor que
+      # el turno se caiga acá, con el motivo escrito y a la vista, que quedarse
+      # dando vueltas seis horas fallando post por post.
+      - name: Instalar Claude Code
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
       - name: Load config
         env:
           CONFIG_B64: ${{ secrets.CONFIG_B64 }}
@@ -299,6 +313,19 @@ jobs:
           # de repositorio SOLO_TELEGRAM (Settings → Secrets and variables →
           # Actions → Variables) con el valor 0 o 1; lo que diga ahí manda.
           SOLO_TELEGRAM: ${{ vars.SOLO_TELEGRAM || '1' }}
+          # Llave de la SUSCRIPCIÓN de Claude, y la ÚNICA forma en que este bot
+          # habla con Claude. El texto (las frases sobre la foto, la descripción
+          # y el guion del video) se pide con esto, que ya está pagado en el
+          # plan. La API de Anthropic no se usa más: el código que la usaba se
+          # borró, no quedó apagado.
+          #
+          # Se genera con `claude setup-token` en la computadora y se pega acá
+          # como secreto. Dura un año.
+          #
+          # Sin esta llave el bot no puede escribir nada, así que si falta, el
+          # turno se cae en el arranque con el motivo a la vista (runner.py la
+          # exige) en vez de quedarse seis horas fallando post por post.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: python runner.py
 
       # Guardado final del turno. El runner ya va guardando en cada ciclo;
