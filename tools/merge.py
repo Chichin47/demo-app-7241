@@ -120,9 +120,26 @@ def main():
         final.update(L)  # por defecto manda lo local
 
         # 1) Procesados: la unión de ambos. Nunca se olvida un post.
-        pr = set(j(R.get("processed_ids.json", "{}"), {}).get("processed", []) or [])
-        pl = set(j(L.get("processed_ids.json", "{}"), {}).get("processed", []) or [])
-        final["processed_ids.json"] = volcar({"processed": sorted(pr | pl)})
+        #
+        # Ojo: este archivo NO guarda solo la lista. También guarda la marca de
+        # cuál es la página de origen (`pagina_origen`), y puede guardar más
+        # cosas mañana. Antes acá se armaba un diccionario nuevo con la lista y
+        # nada más, así que cada vez que se guardaba el estado la marca se
+        # borraba sin que se notara: adentro del turno seguía andando (el
+        # archivo de trabajo no se toca), pero al empezar el turno siguiente el
+        # bot leía el estado del repositorio, no encontraba la marca, la tomaba
+        # por un cambio de página y anotaba como "ya vistas" las publicaciones
+        # que estaban esperando salir. Una publicación perdida por cada relevo.
+        # Por eso ahora se conservan TODAS las claves y solo se reemplaza la
+        # lista.
+        r_ids = j(R.get("processed_ids.json", "{}"), {})
+        l_ids = j(L.get("processed_ids.json", "{}"), {})
+        pr = set(r_ids.get("processed", []) or [])
+        pl = set(l_ids.get("processed", []) or [])
+        unido_ids = dict(r_ids)
+        unido_ids.update(l_ids)  # ante la duda manda lo local, igual que arriba
+        unido_ids["processed"] = sorted(pr | pl)
+        final["processed_ids.json"] = volcar(unido_ids)
 
         # 2) Publicados: también unión.
         mr = j(R.get("published_map.json", "{}"), {})
