@@ -2109,13 +2109,24 @@ def main():
 
     posts = fetch_recent_posts(processed)
 
-    # Fuente nueva: si en el registro no hay NADA de esta página, es que la
-    # página 1 acaba de cambiar. Lo que ya está publicado ahí es viejo (o del
-    # propio bot, de cuando era la página que publicaba), así que se anota
-    # todo como ya visto SIN publicar nada. Desde el barrido siguiente solo
-    # entra lo que se publique de ahí en adelante.
-    prefijo = f"{PAGE_ID_MAIN}_"
-    if posts and processed and not any(p.startswith(prefijo) for p in processed):
+    # Cambio de página de origen. El registro guarda cuál era la página 1 la
+    # última vez; si hoy es otra, todo lo que ya está publicado en la nueva se
+    # anota como ya visto SIN publicarlo, y recién desde el barrido siguiente
+    # entra lo nuevo.
+    #
+    # Antes esto se decidía mirando si el registro tenía o no publicaciones de
+    # esa página. Fallaba al VOLVER a una página que ya había sido origen: como
+    # sí tenía historial, no se activaba, y el bot tomaba por novedades las
+    # publicaciones que él mismo había puesto ahí mientras era el destino. O
+    # sea, se republicaba a sí mismo. Con la marca guardada eso no pasa, se
+    # cambie a la página que se cambie y las veces que se cambie.
+    # La primera vez que corre esta versión el registro todavía no tiene la
+    # marca, así que se toma como cambio y se anota lo que haya. Es lo seguro:
+    # anotar de más solo cuesta que un post espere a que lo republiques,
+    # mientras que anotar de menos hace que el bot se republique a sí mismo.
+    origen_anterior = str(state.get("pagina_origen") or "")
+    if origen_anterior != str(PAGE_ID_MAIN):
+        state["pagina_origen"] = str(PAGE_ID_MAIN)
         for p in posts:
             processed.add(p["id"])
         state["processed"] = sorted(processed)
