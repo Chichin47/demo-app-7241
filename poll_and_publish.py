@@ -1104,6 +1104,29 @@ def _correr_claude_code(system, pedido):
     if isinstance(envase, dict) and envase.get("is_error"):
         raise RuntimeError(f"Claude Code avisó un error: "
                            f"{str(envase.get('result'))[:400]}")
+
+    # Cuánto consumió del plan. Se anota porque si no, no hay forma de saberlo:
+    # el plan no se cobra por token, así que no aparece en ninguna factura, y
+    # sin este renglón no se puede responder "cuánto me está gastando el bot".
+    #
+    # La entrada se desglosa porque las tres partes NO pesan igual: lo que se
+    # lee de la memoria intermedia es lo más barato, lo que se escribe en ella
+    # es lo más caro, y lo suelto va al precio normal. La mayor parte de cada
+    # pedido es contexto fijo de Claude Code que se repite igual en todos, así
+    # que casi siempre se lee de la memoria en vez de mandarse de nuevo.
+    try:
+        u = (envase.get("usage") or {}) if isinstance(envase, dict) else {}
+        suelto = int(u.get("input_tokens") or 0)
+        escrito = int(u.get("cache_creation_input_tokens") or 0)
+        leido = int(u.get("cache_read_input_tokens") or 0)
+        salida = int(u.get("output_tokens") or 0)
+        segundos = float(envase.get("duration_ms") or 0) / 1000.0
+        log(f"[plan] Claude: {suelto + escrito + leido:,} tokens de entrada "
+            f"({leido:,} leídos de memoria, {escrito:,} guardados, {suelto:,} "
+            f"sueltos) y {salida:,} de salida, en {segundos:.1f}s.")
+    except Exception:  # noqa: BLE001
+        pass  # el contador nunca puede romper una publicación
+
     return (envase or {}).get("result") if isinstance(envase, dict) else None
 
 
