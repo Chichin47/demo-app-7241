@@ -45,7 +45,15 @@ PAGE_ID_MAIN = os.environ["PAGE_ID_MAIN"]
 PAGE_TOKEN_MAIN = os.environ["PAGE_TOKEN_MAIN"]
 PAGE_ID_BACKUP = os.environ["PAGE_ID_BACKUP"]
 PAGE_TOKEN_BACKUP = os.environ["PAGE_TOKEN_BACKUP"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+# La API de Anthropic ya no se usa en ninguna parte de este proyecto. El texto
+# (descripciones, frases sobre la foto y guiones) se le pide a Claude Code con
+# la llave de la suscripción, que ya está pagada. No queda ningún camino que
+# pueda mandar una sola llamada a la API: el código que la usaba se borró, no
+# se dejó apagado. Si algún día hiciera falta volver, está en el historial de
+# git, que es donde va el código que no se usa.
+#
+# La voz de los videos SÍ sigue siendo un servicio aparte (ai33.pro), y eso no
+# cambió: es otro proveedor, no tiene nada que ver con esto.
 
 # Llave de USUARIO, larga. Si está puesta, el bot se fabrica solo las llaves de
 # las dos páginas cada vez que arranca, y las de los secretos pasan a ser un
@@ -862,6 +870,272 @@ def _anotar_arranque(narracion):
         log(f"No se pudo anotar el arranque ({e}); sigo igual.")
 
 
+# ---------------------------------------------------------------------------
+# Quién atiende los pedidos de texto
+# ---------------------------------------------------------------------------
+#
+# Antes esto era una sola llamada a la Messages API, que se paga por token.
+# Ahora el trabajo lo hace Claude Code con la llave de la suscripción, que ya
+# está pagada. El modelo es el mismo (Sonnet); lo que cambia es por dónde entra
+# el pedido y cómo vuelve la respuesta.
+#
+# El detalle fino, que es lo único delicado de todo esto: con la API se usaba
+# tool_choice forzado, y eso GARANTIZA que la respuesta viene con la estructura
+# exacta (titulo, descripción, narración). Claude Code no tiene esa garantía:
+# devuelve texto. Así que acá hay que hacer a mano lo que antes hacía la API:
+#
+#   1. pedir el JSON describiendo los campos, y describirlos DESDE el mismo
+#      esquema de submit_edit para que nunca queden desincronizados;
+#   2. sacar el objeto aunque venga envuelto en vallas de código o con una
+#      frase de cortesía adelante;
+#   3. revisar que estén los campos que el bot va a usar;
+#   4. si algo falta, pedirlo de nuevo UNA vez diciendo qué faltó.
+#
+# Si aun así no sale, se levanta el error de siempre. Eso no pierde el post:
+# el barrido lo anota como error y lo vuelve a intentar en la vuelta siguiente,
+# porque no lo marca como procesado.
+
+CLAUDE_CODE_BIN = os.environ.get("CLAUDE_CODE_BIN") or "claude"
+CLAUDE_CODE_SEGUNDOS = env_num("CLAUDE_CODE_SEGUNDOS", 240, float)
+
+# Herramientas de Claude Code que acá no pintan nada: el pedido es escribir un
+# texto, no tocar archivos ni navegar. Se apagan para que no se le ocurra
+# usarlas y para que no pueda leer el repositorio.
+#
+# Esto no es cosmético. En las pruebas, con el pedido editorial completo el
+# modelo se ponía a llamar herramientas en vez de contestar, y la corrida moría
+# con stop_reason=tool_use. Tres cosas lo arreglan juntas: apagar las
+# herramientas, apagar los servidores MCP que pudiera haber en la máquina, y
+# decirle en el pedido que conteste directo.
+CLAUDE_CODE_SIN_HERRAMIENTAS = [
+    "Bash", "BashOutput", "KillShell", "Read", "Write", "Edit", "NotebookEdit",
+    "Glob", "Grep", "WebFetch", "WebSearch", "Task", "TodoWrite", "Skill",
+    "SlashCommand", "AskUserQuestion", "ExitPlanMode",
+    "ListMcpResources", "ReadMcpResource",
+]
+
+# Margen de vueltas. Con una sola, cualquier intento de herramienta cortaba el
+# pedido en seco; con tres, si igual lo intenta, el rechazo vuelve al modelo y
+# contesta en la vuelta siguiente en vez de perderse el post.
+CLAUDE_CODE_VUELTAS = "3"
+
+SIN_HERRAMIENTAS_AVISO = (
+    "\n\nNo uses herramientas de ningún tipo ni consultes nada: no hace falta "
+    "y no están disponibles. Contestá directamente con el JSON que se te pide."
+)
+
+
+def _contrato_json(esquema):
+    """Traduce el esquema de submit_edit a instrucciones en castellano.
+
+    Se arma desde el esquema y no a mano a propósito: el día que se agregue o
+    se saque un campo de la herramienta, este pedido se actualiza solo. Escrito
+    a mano, tarde o temprano quedaría describiendo campos que ya no existen.
+    """
+    props = (esquema or {}).get("properties") or {}
+    lineas = []
+    for nombre, ficha in props.items():
+        tipo = ficha.get("type", "string")
+        detalle = (ficha.get("description") or "").strip()
+        if tipo == "array":
+            item = (ficha.get("items") or {}).get("properties") or {}
+            campos = ", ".join(
+                f"{k} ({(v.get('enum') and 'uno de: ' + ', '.join(v['enum'])) or v.get('type', 'string')})"
+                for k, v in item.items()
+            )
+            lineas.append(f'- "{nombre}": lista de objetos con {campos}.')
+        else:
+            lineas.append(f'- "{nombre}" ({tipo})'
+                          + (f": {detalle}" if detalle else "."))
+    return (
+        "\n\nCÓMO TENÉS QUE RESPONDER (esto es obligatorio):\n"
+        "Respondé ÚNICAMENTE con un objeto JSON válido. Sin texto antes ni "
+        "después, sin explicaciones, sin vallas de código, sin ```json. El "
+        "primer carácter de tu respuesta tiene que ser { y el último }.\n"
+        "Campos del objeto:\n" + "\n".join(lineas) + "\n"
+        "Si decidís omitir el post, alcanza con {\"skip\": true, "
+        "\"skip_reason\": \"...\"}. Si no lo omitís, poné \"skip\": false y "
+        "completá los demás campos."
+    )
+
+
+def _extraer_json(texto):
+    """Saca el objeto JSON de una respuesta que puede venir con adornos.
+
+    Contempla los tres casos que se ven en la práctica: el JSON limpio, el JSON
+    dentro de vallas de código, y el JSON con una frase de cortesía adelante o
+    atrás. Para el último se recorre el texto contando llaves, respetando las
+    que están adentro de comillas, que es la única forma de cortar bien cuando
+    el propio contenido trae llaves.
+    """
+    if not texto:
+        return None
+    t = texto.strip()
+    if t.startswith("```"):
+        partes = t.split("```")
+        if len(partes) >= 2:
+            cuerpo = partes[1]
+            if cuerpo[:4].lower() == "json":
+                cuerpo = cuerpo[4:]
+            t = cuerpo.strip()
+    try:
+        dato = json.loads(t)
+        return dato if isinstance(dato, dict) else None
+    except Exception:  # noqa: BLE001
+        pass
+    inicio = t.find("{")
+    if inicio < 0:
+        return None
+    hondura = 0
+    en_texto = False
+    escapado = False
+    for i in range(inicio, len(t)):
+        c = t[i]
+        if escapado:
+            escapado = False
+            continue
+        if c == "\\":
+            escapado = True
+            continue
+        if c == '"':
+            en_texto = not en_texto
+            continue
+        if en_texto:
+            continue
+        if c == "{":
+            hondura += 1
+        elif c == "}":
+            hondura -= 1
+            if hondura == 0:
+                try:
+                    dato = json.loads(t[inicio:i + 1])
+                    return dato if isinstance(dato, dict) else None
+                except Exception:  # noqa: BLE001
+                    return None
+    return None
+
+
+def _que_falta(edit, con_video):
+    """Devuelve qué campos le faltan a la respuesta, o "" si está completa."""
+    if not isinstance(edit, dict):
+        return "la respuesta no es un objeto JSON"
+    if edit.get("skip"):
+        return ""
+    faltan = []
+    lines = edit.get("lines")
+    if not isinstance(lines, list) or not lines:
+        faltan.append("lines (con al menos una frase)")
+    else:
+        for l in lines:
+            if not isinstance(l, dict) or not (l.get("text") or "").strip():
+                faltan.append("lines (hay una entrada sin texto)")
+                break
+    if not (edit.get("caption") or "").strip():
+        faltan.append("caption")
+    if con_video:
+        if not (edit.get("titulo_reel") or "").strip():
+            faltan.append("titulo_reel")
+        if not (edit.get("narracion") or "").strip():
+            faltan.append("narracion")
+    return ", ".join(faltan)
+
+
+def _correr_claude_code(system, pedido):
+    """Una pasada de Claude Code en modo callado. Devuelve el texto que contestó."""
+    import subprocess
+
+    cmd = [
+        CLAUDE_CODE_BIN, "-p",
+        "--output-format", "json",
+        "--model", os.environ.get("CLAUDE_MODEL") or "sonnet",
+        "--max-turns", CLAUDE_CODE_VUELTAS,
+        "--system-prompt", system + SIN_HERRAMIENTAS_AVISO,
+        # Sin servidores MCP: si la máquina tuviera alguno configurado, sus
+        # herramientas entrarían al pedido y el modelo trataría de usarlas.
+        "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+        "--disallowed-tools", *CLAUDE_CODE_SIN_HERRAMIENTAS,
+    ]
+    # ESTO ES LO MÁS IMPORTANTE DE TODO EL ARCHIVO Y NO SE VE:
+    #
+    # Claude Code elige con qué llave habla siguiendo un orden de prioridad, y
+    # ANTHROPIC_API_KEY va ANTES que la llave de la suscripción. Textual de la
+    # documentación: en modo -p, "the key is always used when present".
+    #
+    # O sea que si quedara una llave de API dando vueltas en el entorno —vieja,
+    # olvidada adentro de la configuración, puesta por otro motivo— Claude Code
+    # la agarraría y se volvería a pagar por token, con todo funcionando
+    # perfecto y sin una sola señal de que algo cambió. Por eso se saca acá,
+    # aunque el código ya no la use en ninguna parte: es el cinturón además del
+    # airbag, y es barato.
+    entorno = dict(os.environ)
+    entorno.pop("ANTHROPIC_API_KEY", None)
+    entorno.pop("ANTHROPIC_AUTH_TOKEN", None)
+    sin_llave = not (entorno.get("CLAUDE_CODE_OAUTH_TOKEN") or "").strip()
+
+    # Se corre en una carpeta vacía y aparte: Claude Code trabaja sobre el
+    # directorio donde se lo llama, y no tiene por qué ver el repositorio para
+    # escribir la descripción de un post.
+    with tempfile.TemporaryDirectory(prefix="claude_") as vacio:
+        proc = subprocess.run(
+            cmd, input=pedido, capture_output=True, text=True,
+            cwd=vacio, timeout=CLAUDE_CODE_SEGUNDOS, env=entorno,
+        )
+    if proc.returncode != 0:
+        # Si encima falta la llave del plan, decirlo acá. Sin esta aclaración
+        # lo que llega es Claude Code pidiendo iniciar sesión, que en un
+        # servidor sin pantalla no le dice nada a nadie. No se revisa antes de
+        # llamar a propósito: en una computadora donde ya iniciaste sesión a
+        # mano la variable no hace falta, y un aviso previo sobraría.
+        pista = ("" if not sin_llave else
+                 " Además falta CLAUDE_CODE_OAUTH_TOKEN, que es la llave de la "
+                 "suscripción: se genera con `claude setup-token` y se pega "
+                 "como secreto del repositorio.")
+        raise RuntimeError(
+            f"Claude Code terminó con error {proc.returncode}: "
+            f"{(proc.stderr or proc.stdout or '')[:400]}{pista}"
+        )
+    try:
+        envase = json.loads(proc.stdout or "{}")
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Claude Code contestó algo que no es JSON ({e}).")
+    if isinstance(envase, list):  # por si un día devuelve la lista de mensajes
+        envase = next((m for m in reversed(envase)
+                       if isinstance(m, dict) and m.get("type") == "result"), {})
+    if isinstance(envase, dict) and envase.get("is_error"):
+        raise RuntimeError(f"Claude Code avisó un error: "
+                           f"{str(envase.get('result'))[:400]}")
+    return (envase or {}).get("result") if isinstance(envase, dict) else None
+
+
+def _pedir_con_el_plan(system, user_msg, con_video, esquema):
+    """El pedido de texto por la suscripción, con un reintento si vuelve incompleto."""
+    pedido = user_msg + _contrato_json(esquema)
+    respuesta = _correr_claude_code(system, pedido)
+    edit = _extraer_json(respuesta)
+    falta = _que_falta(edit, con_video)
+    if not falta:
+        return edit
+
+    log(f"Claude Code devolvió una respuesta incompleta ({falta or 'sin JSON'}); "
+        f"la pido de nuevo.")
+    reintento = (
+        pedido
+        + "\n\nTu respuesta anterior no sirvió: "
+        + (f"faltó {falta}" if falta else "no venía un objeto JSON")
+        + ". Respondé de nuevo, SOLO el objeto JSON completo, empezando por { "
+          "y terminando por }."
+    )
+    respuesta = _correr_claude_code(system, reintento)
+    edit = _extraer_json(respuesta)
+    falta = _que_falta(edit, con_video)
+    if falta:
+        raise RuntimeError(
+            f"Claude Code no devolvió la edición completa (faltó: "
+            f"{falta or 'el objeto JSON'})."
+        )
+    return edit
+
+
 def ask_claude(original_text, num_images, manual=False, con_video=False,
                programa=None, aparte=False):
     """Le pide a Claude la edición del post.
@@ -874,10 +1148,10 @@ def ask_claude(original_text, num_images, manual=False, con_video=False,
     programa dice de qué reality es el post cuando no es el de siempre. Son dos
     líneas más y solo viajan en esos posts; con programa=None el pedido es
     idéntico al de toda la vida.
-    """
-    import anthropic
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    El pedido en sí es el mismo de siempre; lo único que cambió es por dónde
+    se manda: antes iba a la API y ahora va por la suscripción.
+    """
     user_msg = (
         f"Texto original del post:\n---\n{original_text}\n---\n"
         f"Cantidad de fotos disponibles: {num_images} (índices 0"
@@ -896,19 +1170,11 @@ def ask_claude(original_text, num_images, manual=False, con_video=False,
             user_msg += instruccion_arranque()
         except Exception as e:
             log(f"No se pudo armar la indicación de arranque ({e}); sigo con la de siempre.")
-    model = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5")
-    resp = client.messages.create(
-        model=model,
-        max_tokens=1024,
-        system=prompt_sistema(con_video, programa),
-        tools=[herramienta(con_video)],
-        tool_choice={"type": "tool", "name": "submit_edit"},
-        messages=[{"role": "user", "content": user_msg}],
+
+    return _pedir_con_el_plan(
+        prompt_sistema(con_video, programa), user_msg, con_video,
+        herramienta(con_video)["input_schema"],
     )
-    for block in resp.content:
-        if block.type == "tool_use" and block.name == "submit_edit":
-            return block.input
-    raise RuntimeError("Claude no devolvió submit_edit")
 
 
 # ---------------------------------------------------------------------------

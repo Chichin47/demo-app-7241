@@ -63,7 +63,9 @@ REQUERIDAS = (
     "PAGE_TOKEN_MAIN",
     "PAGE_ID_BACKUP",
     "PAGE_TOKEN_BACKUP",
-    "ANTHROPIC_API_KEY",
+    # La llave de la suscripción: es con la que se escribe el texto de los
+    # posts. Antes acá iba ANTHROPIC_API_KEY; el bot ya no usa la API.
+    "CLAUDE_CODE_OAUTH_TOKEN",
 )
 
 
