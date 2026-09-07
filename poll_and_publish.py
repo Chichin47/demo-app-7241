@@ -203,25 +203,30 @@ CACHE_LLAVES_MINUTOS = env_num("CACHE_LLAVES_MINUTOS", 40, float)
 
 
 def _llaves_guardadas():
-    """Las llaves del archivo temporal, si todavía están frescas."""
+    """Las llaves del archivo temporal que todavía están frescas, haya o no
+    de TODAS las páginas.
+
+    Antes esta función exigía que estuvieran las de TODAS las páginas en uso
+    (la 3 solo cuenta si está configurada) para devolver algo; si faltaba
+    una sola, tiraba el caché entero. El problema: mientras Meta no soltaba
+    la llave de la página 3 (por el tope de llamadas, o antes por el ID
+    equivocado), el caché NUNCA quedaba completo, así que esta función
+    devolvía None SIEMPRE, y cada barrido volvía a pedir las llaves de las
+    TRES páginas de cero -- incluidas la 1 y la 2, que nunca tuvieron
+    ningún problema. Eso multiplicó por cuatro las llamadas a Meta en cada
+    barrido (una cada 3 minutos en vez de una cada 40), que es justamente lo
+    que hizo chocar una y otra vez con el tope de llamadas.
+    Ahora se devuelve lo que haya guardado, esté completo o no: la página
+    que ya tiene llave buena no se vuelve a pedir, y la que falta se pide
+    sola (ver `_usar_llaves_frescas`).
+    """
     try:
         if not CACHE_LLAVES.exists():
             return None
         guardado = json.loads(CACHE_LLAVES.read_text())
         if time.time() - float(guardado.get("ts") or 0) > CACHE_LLAVES_MINUTOS * 60:
             return None
-        llaves = guardado.get("llaves") or {}
-        # Solo sirve si están TODAS las páginas que hoy están en uso (la 3 solo
-        # cuenta si está configurada). Si falta una (porque ese día Meta no la
-        # dio), se vuelve a preguntar: así, apenas se arregla el permiso de esa
-        # página, el bot lo nota en el barrido siguiente y no queda esperando
-        # de gusto a que caduque la copia guardada.
-        requeridas = [PAGE_ID_MAIN, PAGE_ID_BACKUP]
-        if PAGE_ID_TERCERA:
-            requeridas.append(PAGE_ID_TERCERA)
-        if not all(llaves.get(p) for p in requeridas):
-            return None
-        return llaves
+        return guardado.get("llaves") or {}
     except Exception:
         return None
 
@@ -363,33 +368,60 @@ def _paginas_en_uso():
     return paginas
 
 
-def _usar_llaves_frescas():
-    """Reemplaza las llaves de las páginas por las que acaba de dar Meta.
-
-    Primero mira el archivo temporal: si las llaves de hace un rato siguen
-    sirviendo, se usan esas y no se le pide NADA a Meta. Así el barrido cada
-    tres minutos no consume el cupo de llamadas por hora.
-    """
+def _aplicar_llaves(llaves):
+    """Copia lo que haya en `llaves` a las variables globales que usa el resto
+    del bot. Separado de `_usar_llaves_frescas` para no repetir este bloque
+    en la rama "estaba todo en caché" y en la rama "hubo que pedir algo"."""
     global PAGE_TOKEN_MAIN, PAGE_TOKEN_BACKUP, PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA
+    if llaves.get(PAGE_ID_MAIN):
+        PAGE_TOKEN_MAIN = llaves[PAGE_ID_MAIN]
+    if llaves.get(PAGE_ID_BACKUP):
+        PAGE_TOKEN_BACKUP = llaves[PAGE_ID_BACKUP]
+    if PAGE_ID_TERCERA and llaves.get(PAGE_ID_TERCERA):
+        PAGE_TOKEN_TERCERA = llaves[PAGE_ID_TERCERA]
+        numerico = _resolver_id_numerico(PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA)
+        if numerico:
+            log(f"Página 3: {PAGE_ID_TERCERA} es el ID real {numerico}; uso el número de ahora en más.")
+            PAGE_ID_TERCERA = numerico
+
+
+def _usar_llaves_frescas():
+    """Reemplaza las llaves de las páginas por las que acaba de dar Meta,
+    pidiendo SOLO las que hagan falta.
+
+    Antes, si faltaba la llave de una sola página (por ejemplo la 3, mientras
+    Meta no la suelta), se tiraba el caché entero y se volvían a pedir las
+    TRES de cero en cada barrido -- página 1 y 2 incluidas, que nunca
+    fallaron. Eso disparaba cuatro llamadas a Meta cada 3 minutos en vez de
+    una cada 40, y fue lo que hizo chocar una y otra vez con el tope de
+    llamadas. Ahora cada página se trata por separado: la que ya tiene llave
+    buena en el caché no se vuelve a tocar, y solo se le pide a Meta la(s)
+    que efectivamente falta(n).
+
+    El caché se aplica ANTES de mirar si hay pausa por tope de cupo, no
+    después: leerlo no le pide nada a Meta, así que no hay motivo para
+    dejar a las páginas que sí tienen llave buena sin actualizar solo porque
+    otra está en el medio de esa espera.
+    """
+    paginas = _paginas_en_uso()
+    llaves = dict(_llaves_guardadas() or {})
+    if llaves:
+        _aplicar_llaves(llaves)
+    faltan_en_cache = [pid for pid, _n in paginas if pid and not llaves.get(pid)]
+    if not faltan_en_cache:
+        # Estaban todas en el caché: no hace falta pedirle nada a Meta.
+        return
     espera = minutos_de_pausa()
     if espera:
-        # En recreo por cupo no se le pide nada a Meta, ni siquiera las llaves.
+        # En recreo por cupo no se le pide nada a Meta por lo que falta, pero
+        # lo que ya estaba en el caché (arriba) igual quedó aplicado.
         return
-    guardadas = _llaves_guardadas()
-    if guardadas:
-        if guardadas.get(PAGE_ID_MAIN):
-            PAGE_TOKEN_MAIN = guardadas[PAGE_ID_MAIN]
-        if guardadas.get(PAGE_ID_BACKUP):
-            PAGE_TOKEN_BACKUP = guardadas[PAGE_ID_BACKUP]
-        if PAGE_ID_TERCERA and guardadas.get(PAGE_ID_TERCERA):
-            PAGE_TOKEN_TERCERA = guardadas[PAGE_ID_TERCERA]
-            numerico = _resolver_id_numerico(PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA)
-            if numerico:
-                PAGE_ID_TERCERA = numerico
-        return
-    llaves = _llaves_de_las_paginas()
-    paginas = _paginas_en_uso()
-    # Lo que no vino en la lista se pide de a una: así entran las páginas de la
+    # Si falta más de una todavía vale la pena pedir la lista completa (una
+    # sola llamada puede traer varias de un saque). Si falta nada más que
+    # una, vamos derecho a pedirla suelta y nos ahorramos esa llamada.
+    if len(faltan_en_cache) > 1:
+        llaves.update(_llaves_de_las_paginas())
+    # Lo que siga sin aparecer se pide de a una: así entran las páginas de la
     # nueva experiencia, que la lista no muestra (la 2 y la 3 son de esas).
     for pid, _nombre in paginas:
         if pid and not llaves.get(pid):
@@ -402,31 +434,15 @@ def _usar_llaves_frescas():
         if USER_TOKEN:
             log("Sigo con las llaves de los secretos.")
         return
-    cuales = []
-    if llaves.get(PAGE_ID_MAIN):
-        PAGE_TOKEN_MAIN = llaves[PAGE_ID_MAIN]
-        cuales.append("página 1")
-    if llaves.get(PAGE_ID_BACKUP):
-        PAGE_TOKEN_BACKUP = llaves[PAGE_ID_BACKUP]
-        cuales.append("página 2")
-    if PAGE_ID_TERCERA and llaves.get(PAGE_ID_TERCERA):
-        PAGE_TOKEN_TERCERA = llaves[PAGE_ID_TERCERA]
-        cuales.append("página 3")
-        numerico = _resolver_id_numerico(PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA)
-        if numerico:
-            log(f"Página 3: {PAGE_ID_TERCERA} es el ID real {numerico}; uso el número de ahora en más.")
-            PAGE_ID_TERCERA = numerico
+    conseguidas = [n for pid, n in paginas if pid in faltan_en_cache and llaves.get(pid)]
+    if conseguidas:
+        log(f"Llaves frescas pedidas a Meta para: {', '.join(conseguidas)} "
+            f"(se guardan {CACHE_LLAVES_MINUTOS:.0f} min para no repetir).")
+    _aplicar_llaves(llaves)
+    # Se guarda lo que haya, esté completo o no: así la página que sí vino no
+    # se vuelve a pedir el barrido que viene, aunque otra siga fallando.
+    _guardar_llaves(llaves)
     faltan = [p for p, n in paginas if not llaves.get(p)]
-    if cuales:
-        # Se guardan solo si vinieron TODAS: una copia a medias haría que el
-        # bot se quede con la llave vieja de la que falta durante 40 minutos.
-        completas = not faltan
-        log(f"Llaves frescas pedidas a Meta para: {', '.join(cuales)}"
-            + (f" (se guardan {CACHE_LLAVES_MINUTOS:.0f} min para no repetir)."
-               if completas else " (falta alguna, así que se vuelven a pedir"
-                                 " en el próximo barrido)."))
-        if completas:
-            _guardar_llaves(llaves)
     if faltan:
         log(f"Ojo: la llave de usuario no da acceso a {len(faltan)} de las "
             f"{len(paginas)} páginas; para esa(s) se usa la del secreto (si hay).")
