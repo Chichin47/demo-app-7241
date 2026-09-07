@@ -2023,7 +2023,11 @@ def process_post(post, tmpdir, allow_publish=True):
     # no reciba varios posts de golpe, y estos no van a la página 2: van a tu
     # chat, para que los repostees a mano en otro lado. Hacerlos esperar 10
     # minutos era freno sin motivo.
-    if not allow_publish and not DRY_RUN and not va_aparte(text):
+    # Lo mismo vale para #lagranjavip cuando la página 3 está lista: tampoco
+    # toca la página 2 (va a Universo Reality Tv Mexico), así que tampoco
+    # tiene sentido hacerlo esperar el espaciado de la página 2.
+    if (not allow_publish and not DRY_RUN
+            and not va_aparte(text) and not va_a_lagranja(text)):
         log(f"Post {post_id}: publicable, pero toca esperar el turno; queda pendiente.")
         return "deferred"
 
@@ -2164,7 +2168,11 @@ def process_post(post, tmpdir, allow_publish=True):
         if backup_post_id:
             record_published(backup_post_id, post_id, text, caption, "reel",
                              pagina=pagina_id)
-            mark_published_now("auto")
+            # El reloj de espaciado es para no inundar la página 2: si esto
+            # fue a la 3 (#lagranjavip), no la tocó, así que no tiene que
+            # frenar al próximo post normal de la página 2.
+            if not a_lagranja:
+                mark_published_now("auto")
             _anotar_formato("reel")
             # Solo cuando el video salió de verdad: así el próximo abre distinto.
             _anotar_arranque(guion.get("narracion") if guion else "")
@@ -2185,7 +2193,10 @@ def process_post(post, tmpdir, allow_publish=True):
     result = publish_photo(out_path, caption, pagina_id=pagina_id, pagina_token=pagina_token)
     backup_post_id = result.get("post_id") or result.get("id")
     record_published(backup_post_id, post_id, text, caption, "foto", pagina=pagina_id)
-    mark_published_now("auto")
+    # Mismo motivo que en el reel: el reloj de espaciado protege a la página
+    # 2, así que un post que fue a la 3 (#lagranjavip) no lo debe mover.
+    if not a_lagranja:
+        mark_published_now("auto")
     _anotar_formato("foto")
     log(f"Post {post_id} -> publicado como {backup_post_id} en {nombre_pagina}.")
     # La misma foto y la misma descripción, ya hechas, van también a Instagram.
@@ -2660,11 +2671,15 @@ def main():
     # vez de gotear de a uno. El tope de APARTADOS_POR_CORRIDA está para que un
     # aluvión no haga eterna una sola vuelta; lo que sobre sale en la siguiente,
     # tres minutos después.
-    ids_aparte = {p["id"] for p in candidatos if va_aparte(p.get("message") or "")}
+    # Los de #lagranjavip (cuando la página 3 ya está lista) entran en el mismo
+    # grupo y por el mismo motivo: tampoco tocan la página 2, así que tampoco
+    # tiene sentido que esperen el cupo pensado para ella.
+    ids_aparte = {p["id"] for p in candidatos
+                  if va_aparte(p.get("message") or "") or va_a_lagranja(p.get("message") or "")}
     apartados = [p for p in candidatos if p["id"] in ids_aparte][:APARTADOS_POR_CORRIDA]
     normales = [p for p in candidatos if p["id"] not in ids_aparte]
     if apartados:
-        log(f"{len(apartados)} apartado(s) van sin esperar turno.")
+        log(f"{len(apartados)} post(s) van sin esperar turno (apartados y/o #lagranjavip).")
     new_posts = apartados + normales[:MAX_POSTS_PER_RUN]
 
     if not new_posts:
