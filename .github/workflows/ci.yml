@@ -206,17 +206,24 @@ jobs:
 
       # Página 3 (destino APARTE, solo para los posts con #lagranjavip):
       # Universo Reality Tv Mexico (facebook.com/universorealitytvmexico).
-      # Se configura por el nombre de usuario de la página, no por su número:
-      # el bot mismo lo resuelve al arrancar (con USER_TOKEN, igual que
-      # consigue la llave) y de ahí en más usa el número real. Esto es
-      # opcional a propósito: si el día de mañana esta página se borra o deja
-      # de hacer falta, alcanza con borrar este paso y la variable
+      #
+      # Se probó primero configurándola por su nombre de usuario
+      # (universorealitytvmexico), pensando que el bot podía resolver el
+      # número él solo la primera vez que pide la llave. Pero Meta contestó
+      # error 100 ("Object does not exist... requires the
+      # 'pages_read_engagement' feature") al pedir la llave POR NOMBRE, algo
+      # que no le pasa a la página 2 (que sí está por número). Por eso acá va
+      # directo el ID numérico: facebook.com/61550471444829 redirige a esta
+      # misma página, así que es su ID de verdad (confirmado a mano).
+      #
+      # Esto es opcional a propósito: si el día de mañana esta página se borra
+      # o deja de hacer falta, alcanza con borrar este paso y la variable
       # PAGE_ID_TERCERA desaparece, y los posts con #lagranjavip vuelven a
       # apartarse al chat en vez de fallar el turno.
       - name: Pagina 3
         run: |
-          echo "PAGE_ID_TERCERA=universorealitytvmexico" >> "$GITHUB_ENV"
-          echo "Página 3 (aparte, solo #lagranjavip): Universo Reality Tv Mexico."
+          echo "PAGE_ID_TERCERA=61550471444829" >> "$GITHUB_ENV"
+          echo "Página 3 (aparte, solo #lagranjavip): Universo Reality Tv Mexico (61550471444829)."
 
       # Siempre se parte de la ÚLTIMA versión del estado que hay en el
       # repositorio, no de la del commit con el que arrancó este turno.
