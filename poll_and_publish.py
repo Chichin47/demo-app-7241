@@ -45,6 +45,15 @@ PAGE_ID_MAIN = os.environ["PAGE_ID_MAIN"]
 PAGE_TOKEN_MAIN = os.environ["PAGE_TOKEN_MAIN"]
 PAGE_ID_BACKUP = os.environ["PAGE_ID_BACKUP"]
 PAGE_TOKEN_BACKUP = os.environ["PAGE_TOKEN_BACKUP"]
+
+# Página 3 (Universo Reality Tv Mexico): destino aparte, solo para los posts
+# de la página 1 que llevan la marca #lagranjavip (ver ETIQUETA_LAGRANJA más
+# abajo, junto a ETIQUETA_VIDEO y ETIQUETA_APARTE). A propósito es OPCIONAL:
+# si no se define PAGE_ID_TERCERA, la marca se sigue detectando, pero esos
+# posts se van "aparte" al chat de Telegram en vez de fallar el turno entero o,
+# peor, terminar publicados por error en la página 2.
+PAGE_ID_TERCERA = os.environ.get("PAGE_ID_TERCERA", "").strip()
+PAGE_TOKEN_TERCERA = os.environ.get("PAGE_TOKEN_TERCERA", "").strip()
 # La API de Anthropic ya no se usa en ninguna parte de este proyecto. El texto
 # (descripciones, frases sobre la foto y guiones) se le pide a Claude Code con
 # la llave de la suscripción, que ya está pagada. No queda ningún camino que
@@ -202,11 +211,15 @@ def _llaves_guardadas():
         if time.time() - float(guardado.get("ts") or 0) > CACHE_LLAVES_MINUTOS * 60:
             return None
         llaves = guardado.get("llaves") or {}
-        # Solo sirve si están LAS DOS. Si falta una (porque ese día Meta no
-        # la dio), se vuelve a preguntar: así, apenas se arregla el permiso
-        # de esa página, el bot lo nota en el barrido siguiente y no queda
-        # esperando de gusto a que caduque la copia guardada.
-        if not (llaves.get(PAGE_ID_MAIN) and llaves.get(PAGE_ID_BACKUP)):
+        # Solo sirve si están TODAS las páginas que hoy están en uso (la 3 solo
+        # cuenta si está configurada). Si falta una (porque ese día Meta no la
+        # dio), se vuelve a preguntar: así, apenas se arregla el permiso de esa
+        # página, el bot lo nota en el barrido siguiente y no queda esperando
+        # de gusto a que caduque la copia guardada.
+        requeridas = [PAGE_ID_MAIN, PAGE_ID_BACKUP]
+        if PAGE_ID_TERCERA:
+            requeridas.append(PAGE_ID_TERCERA)
+        if not all(llaves.get(p) for p in requeridas):
             return None
         return llaves
     except Exception:
@@ -317,14 +330,47 @@ def _llave_suelta(page_id):
         return None
 
 
+def _resolver_id_numerico(alias, token):
+    """Si `alias` es el nombre de usuario de la página, devuelve su ID numérico.
+
+    A la página 3 le sirve configurarse por su nombre de usuario
+    (universorealitytvmexico), que es más fácil de escribir a mano que buscar
+    el número en algún lado. Graph acepta el nombre de usuario para casi todo,
+    pero para subir reels documentan el ID; por eso, apenas se consigue la
+    llave, se cambia el nombre por el número de una vez y ya no se vuelve a
+    tocar en lo que dura el turno.
+    """
+    if not alias or alias.isdigit() or not token:
+        return None
+    try:
+        r = requests.get(
+            f"https://graph.facebook.com/{GRAPH_VERSION}/{alias}",
+            params={"fields": "id", "access_token": token},
+            timeout=30,
+        )
+        if r.status_code >= 400:
+            return None
+        return (r.json() or {}).get("id") or None
+    except Exception:
+        return None
+
+
+def _paginas_en_uso():
+    """(id, nombre) de cada página que el bot usa hoy. La 3 solo si está puesta."""
+    paginas = [(PAGE_ID_MAIN, "página 1"), (PAGE_ID_BACKUP, "página 2")]
+    if PAGE_ID_TERCERA:
+        paginas.append((PAGE_ID_TERCERA, "página 3"))
+    return paginas
+
+
 def _usar_llaves_frescas():
-    """Reemplaza las llaves de las dos páginas por las que acaba de dar Meta.
+    """Reemplaza las llaves de las páginas por las que acaba de dar Meta.
 
     Primero mira el archivo temporal: si las llaves de hace un rato siguen
     sirviendo, se usan esas y no se le pide NADA a Meta. Así el barrido cada
     tres minutos no consume el cupo de llamadas por hora.
     """
-    global PAGE_TOKEN_MAIN, PAGE_TOKEN_BACKUP
+    global PAGE_TOKEN_MAIN, PAGE_TOKEN_BACKUP, PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA
     espera = minutos_de_pausa()
     if espera:
         # En recreo por cupo no se le pide nada a Meta, ni siquiera las llaves.
@@ -335,11 +381,17 @@ def _usar_llaves_frescas():
             PAGE_TOKEN_MAIN = guardadas[PAGE_ID_MAIN]
         if guardadas.get(PAGE_ID_BACKUP):
             PAGE_TOKEN_BACKUP = guardadas[PAGE_ID_BACKUP]
+        if PAGE_ID_TERCERA and guardadas.get(PAGE_ID_TERCERA):
+            PAGE_TOKEN_TERCERA = guardadas[PAGE_ID_TERCERA]
+            numerico = _resolver_id_numerico(PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA)
+            if numerico:
+                PAGE_ID_TERCERA = numerico
         return
     llaves = _llaves_de_las_paginas()
+    paginas = _paginas_en_uso()
     # Lo que no vino en la lista se pide de a una: así entran las páginas de la
-    # nueva experiencia, que la lista no muestra.
-    for pid in (PAGE_ID_MAIN, PAGE_ID_BACKUP):
+    # nueva experiencia, que la lista no muestra (la 2 y la 3 son de esas).
+    for pid, _nombre in paginas:
         if pid and not llaves.get(pid):
             suelta = _llave_suelta(pid)
             if suelta:
@@ -357,21 +409,27 @@ def _usar_llaves_frescas():
     if llaves.get(PAGE_ID_BACKUP):
         PAGE_TOKEN_BACKUP = llaves[PAGE_ID_BACKUP]
         cuales.append("página 2")
-    faltan = [p for p, n in ((PAGE_ID_MAIN, "página 1"), (PAGE_ID_BACKUP, "página 2"))
-              if not llaves.get(p)]
+    if PAGE_ID_TERCERA and llaves.get(PAGE_ID_TERCERA):
+        PAGE_TOKEN_TERCERA = llaves[PAGE_ID_TERCERA]
+        cuales.append("página 3")
+        numerico = _resolver_id_numerico(PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA)
+        if numerico:
+            log(f"Página 3: {PAGE_ID_TERCERA} es el ID real {numerico}; uso el número de ahora en más.")
+            PAGE_ID_TERCERA = numerico
+    faltan = [p for p, n in paginas if not llaves.get(p)]
     if cuales:
-        # Se guardan solo si vinieron las dos: una copia a medias haría que el
+        # Se guardan solo si vinieron TODAS: una copia a medias haría que el
         # bot se quede con la llave vieja de la que falta durante 40 minutos.
-        completas = bool(llaves.get(PAGE_ID_MAIN) and llaves.get(PAGE_ID_BACKUP))
+        completas = not faltan
         log(f"Llaves frescas pedidas a Meta para: {', '.join(cuales)}"
             + (f" (se guardan {CACHE_LLAVES_MINUTOS:.0f} min para no repetir)."
-               if completas else " (falta una, así que se vuelven a pedir"
+               if completas else " (falta alguna, así que se vuelven a pedir"
                                  " en el próximo barrido)."))
         if completas:
             _guardar_llaves(llaves)
     if faltan:
-        log(f"Ojo: la llave de usuario no da acceso a {len(faltan)} de las dos "
-            f"páginas; para esa(s) se usa la del secreto.")
+        log(f"Ojo: la llave de usuario no da acceso a {len(faltan)} de las "
+            f"{len(paginas)} páginas; para esa(s) se usa la del secreto (si hay).")
 
 
 _usar_llaves_frescas()
@@ -1617,33 +1675,46 @@ def mandar_aparte(image_path, caption, reel_path, post_id, video_caido=None,
     return True
 
 
-def publish_photo(image_path, caption):
-    url = f"https://graph.facebook.com/{GRAPH_VERSION}/{PAGE_ID_BACKUP}/photos"
+def publish_photo(image_path, caption, pagina_id=None, pagina_token=None):
+    """Publica la foto en una página. Por defecto, la página 2 (de siempre).
+
+    `pagina_id`/`pagina_token` existen para los posts de La Granja VIP, que
+    van a la página 3 en vez de a la 2 (ver `va_a_lagranja`); el resto de las
+    llamadas no los pasa y todo sigue igual que antes.
+    """
+    pagina_id = pagina_id or PAGE_ID_BACKUP
+    pagina_token = pagina_token or PAGE_TOKEN_BACKUP
+    url = f"https://graph.facebook.com/{GRAPH_VERSION}/{pagina_id}/photos"
     with open(image_path, "rb") as f:
         files = {"source": f}
-        data = {"caption": caption, "access_token": PAGE_TOKEN_BACKUP}
+        data = {"caption": caption, "access_token": pagina_token}
         r = requests.post(url, files=files, data=data, timeout=60)
     r.raise_for_status()
     return r.json()
 
 
-def publish_reel(video_path, description):
-    """Sube el reel a la página de respaldo, en los tres pasos que pide Facebook.
+def publish_reel(video_path, description, pagina_id=None, pagina_token=None):
+    """Sube el reel a una página, en los tres pasos que pide Facebook.
 
     1) Se avisa que empieza una subida y el servidor devuelve un video_id y una
        dirección donde dejar el archivo.
     2) Se manda el archivo entero a esa dirección.
     3) Se cierra la subida diciendo que se publique, con la descripción.
 
+    Por defecto sube a la página 2, como siempre; `pagina_id`/`pagina_token`
+    permiten mandarlo a otra (hoy, la página 3 de La Granja VIP).
+
     Devuelve el id del reel publicado.
     """
+    pagina_id = pagina_id or PAGE_ID_BACKUP
+    pagina_token = pagina_token or PAGE_TOKEN_BACKUP
     video_path = Path(video_path)
     peso = video_path.stat().st_size
-    base = f"https://graph.facebook.com/{GRAPH_VERSION}/{PAGE_ID_BACKUP}/video_reels"
+    base = f"https://graph.facebook.com/{GRAPH_VERSION}/{pagina_id}/video_reels"
 
     inicio = requests.post(
         base,
-        data={"upload_phase": "start", "access_token": PAGE_TOKEN_BACKUP},
+        data={"upload_phase": "start", "access_token": pagina_token},
         timeout=60,
     )
     inicio.raise_for_status()
@@ -1657,7 +1728,7 @@ def publish_reel(video_path, description):
         subida = requests.post(
             destino,
             headers={
-                "Authorization": f"OAuth {PAGE_TOKEN_BACKUP}",
+                "Authorization": f"OAuth {pagina_token}",
                 "offset": "0",
                 "file_size": str(peso),
                 "Content-Type": "application/octet-stream",
@@ -1676,7 +1747,7 @@ def publish_reel(video_path, description):
             "video_id": video_id,
             "video_state": "PUBLISHED",
             "description": description,
-            "access_token": PAGE_TOKEN_BACKUP,
+            "access_token": pagina_token,
         },
         timeout=120,
     )
@@ -1707,6 +1778,18 @@ ETIQUETA_VIDEO = (os.environ.get("ETIQUETA_VIDEO") or "#UR").strip()
 # la página 2. Como ETIQUETA_VIDEO, se puede cambiar desde el ci.yml sin tocar
 # código, y dejándola vacía la regla se apaga entera.
 ETIQUETA_APARTE = (os.environ.get("ETIQUETA_APARTE") or "#topchefvip5").strip()
+
+# La marca que MANDA A LA PÁGINA 3 (Universo Reality Tv Mexico) en vez de a la
+# página 2: se prepara todo igual, pero el destino cambia. A diferencia de
+# ETIQUETA_APARTE, esto SÍ se publica solo, automático; nada más que en otra
+# página. Igual que #topchefvip5, la marca NO se borra del texto (es un
+# hashtag de verdad, no una orden interna) y se busca como palabra entera.
+#
+# Si la página 3 no está configurada (falta PAGE_ID_TERCERA) o hoy no se pudo
+# conseguir su llave, un post con esta marca no se pierde ni se publica por
+# error en la página 2: se trata como apartado, igual que #topchefvip5, hasta
+# que la página 3 vuelva a estar disponible.
+ETIQUETA_LAGRANJA = (os.environ.get("ETIQUETA_LAGRANJA") or "#lagranjavip").strip()
 
 # Cuántos apartados se preparan como máximo en un mismo barrido. No ocupan el
 # cupo de publicación —no salen a ninguna página— pero cada uno cuesta una
@@ -1753,6 +1836,32 @@ def lleva_marca_aparte(texto):
     return bool(_regex_etiqueta(ETIQUETA_APARTE).search(texto or ""))
 
 
+def lleva_marca_lagranja(texto):
+    """¿El texto trae la marca de La Granja VIP (hoy #lagranjavip)?"""
+    if not ETIQUETA_LAGRANJA:
+        return False
+    return bool(_regex_etiqueta(ETIQUETA_LAGRANJA).search(texto or ""))
+
+
+def pagina_lagranja_lista():
+    """¿Hay a dónde mandar los posts de La Granja VIP? Hace falta el ID Y la llave."""
+    return bool(PAGE_ID_TERCERA and PAGE_TOKEN_TERCERA)
+
+
+def va_a_lagranja(texto):
+    """¿Este post va a la página 3 (Universo Reality Tv Mexico) en vez de a la 2?
+
+    Se activa con #lagranjavip. A diferencia de #topchefvip5, esto SÍ se
+    publica solo: se prepara igual —imagen, descripción y video si además
+    lleva #UR— y sale automático, nada más que en otra página.
+
+    Si la página 3 todavía no está lista (falta configurarla, o hoy Meta no
+    dio su llave), el post NO se pierde ni se manda por error a la página 2:
+    `va_aparte` lo toma como apartado mientras tanto, para subirlo a mano.
+    """
+    return lleva_marca_lagranja(texto) and pagina_lagranja_lista()
+
+
 def va_aparte(texto):
     """¿Este post es para apartar en vez de publicarlo?
 
@@ -1760,10 +1869,15 @@ def va_aparte(texto):
     en vez de ir a la página 2 se manda al chat y ahí queda. No toca Facebook
     ni Instagram ni el reloj de publicaciones.
 
-    Son dos motivos distintos y los dos valen: que el post traiga la marca, o
-    que esté puesto el freno de mano que aparta TODO.
+    Van acá TRES motivos, y los tres valen: que el post traiga la marca de
+    apartar, que esté puesto el freno de mano que aparta TODO, o que traiga la
+    marca de La Granja VIP pero la página 3 todavía no esté lista para
+    recibirla (ver `va_a_lagranja`). Este último es una red de seguridad: sin
+    ella, un post de La Granja VIP con la página 3 caída terminaría publicado
+    por error en la página 2, que es justo lo que esta marca quiere evitar.
     """
-    return solo_telegram() or lleva_marca_aparte(texto)
+    return (solo_telegram() or lleva_marca_aparte(texto)
+            or (lleva_marca_lagranja(texto) and not pagina_lagranja_lista()))
 
 
 def programa_de(texto):
@@ -1785,10 +1899,11 @@ def quitar_etiqueta(texto):
     todo el mundo un hashtag que no significa nada para quien lee.
 
     Ojo con lo que NO se borra: la marca de apartar (#topchefvip5) se deja tal
-    cual. Esa sí es un hashtag de verdad, del programa, y sirve al post allá
-    donde se vuelva a publicar. Antes se borraba por simetría con #UR y estaba
-    mal: son dos cosas distintas. #UR es una orden para el bot y no significa
-    nada para nadie más; #topchefvip5 es contenido.
+    cual, y lo mismo la de La Granja VIP (#lagranjavip). Esas sí son hashtags
+    de verdad, del programa, y sirven al post allá donde se publique. Antes
+    #topchefvip5 se borraba por simetría con #UR y estaba mal: son dos cosas
+    distintas. #UR es una orden para el bot y no significa nada para nadie
+    más; #topchefvip5 y #lagranjavip son contenido.
 
     Efecto secundario bueno: como ahora Claude sí ve esa marca, le llega otra
     señal más de qué programa es, además del bloque de contexto.
@@ -1917,18 +2032,23 @@ def process_post(post, tmpdir, allow_publish=True):
     # siempre, que no es el mismo mundo ni el mismo vocabulario.
     programa = programa_de(text)
     # Los apartados van al chat para subida manual: ahí decide el administrador,
-    # no el filtro editorial, así que a Claude se le prohíbe omitirlos.
+    # no el filtro editorial, así que a Claude se le prohíbe omitirlos. Lo
+    # mismo vale para los de La Granja VIP: ya se decidió a mano que esto se
+    # publica (en la página 3), así que tampoco puede omitirlos.
     es_aparte = va_aparte(text)
+    a_lagranja = va_a_lagranja(text)
     edit = ask_claude(texto_limpio, len(local_images), con_video=con_video,
-                      programa=programa, aparte=es_aparte)
+                      programa=programa, aparte=(es_aparte or a_lagranja))
     if edit.get("skip"):
-        if es_aparte:
+        if es_aparte or a_lagranja:
             # Red de seguridad: no debería pasar con el pedido reforzado, pero
             # si igual lo omite, al chat va la foto original con el texto tal
-            # cual. Peor sería que el apartado se pierda en silencio.
+            # cual. Peor sería que el apartado (o el de La Granja VIP, que acá
+            # también termina en el chat en vez de en la página 3) se pierda
+            # en silencio.
             log(f"Post {post_id}: Claude quiso omitirlo "
-                f"({edit.get('skip_reason')}), pero es apartado: va igual al "
-                f"chat con la foto y el texto originales.")
+                f"({edit.get('skip_reason')}); va igual al chat con la foto y "
+                f"el texto originales.")
             mandar_aparte(local_images[0], quitar_etiqueta(text), None, post_id,
                           texto_original=text, log=log,
                           nota=("⚠️ Claude no encontró diálogo aprovechable, "
@@ -1949,7 +2069,8 @@ def process_post(post, tmpdir, allow_publish=True):
 
     caption = quitar_etiqueta(acotar_preambulo(edit.get("caption", "").strip()))
     if not caption:
-        caption = (PROGRAMAS.get(programa) or {}).get("hashtag", "#LCDLF6")
+        respaldo = (PROGRAMAS.get(programa) or {}).get("hashtag")
+        caption = respaldo or (ETIQUETA_LAGRANJA if a_lagranja else "#LCDLF6")
 
     # El mismo post puede salir como foto o como reel. La foto ya está armada
     # arriba y sirve igual de vista previa, así que el video se arma solo si le
@@ -2003,25 +2124,39 @@ def process_post(post, tmpdir, allow_publish=True):
                       video_caido=video_caido, texto_original=text, log=log)
         return "apartado"
 
+    # A qué página va este post en concreto. Por defecto, la de siempre (la
+    # 2); si trae #lagranjavip Y la página 3 está lista (si no lo estuviera,
+    # `va_aparte` ya lo habría cortado arriba), va a la 3 en su lugar. Todo lo
+    # de abajo —Facebook, Instagram, el registro— usa esto, así el post entero
+    # sale de punta a punta en la misma página.
+    if a_lagranja:
+        pagina_id, pagina_token = PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA
+        nombre_pagina = "página 3 (Universo Reality Tv Mexico)"
+    else:
+        pagina_id, pagina_token = PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP
+        nombre_pagina = "página 2"
+
     if formato == "reel" and reel_path:
         try:
-            backup_post_id = publish_reel(reel_path, caption)
+            backup_post_id = publish_reel(reel_path, caption,
+                                          pagina_id=pagina_id, pagina_token=pagina_token)
         except Exception as e:
             log(f"Falló la publicación del reel ({e}); lo publico como foto.")
             video_caido = str(e)
             formato = "foto"
             backup_post_id = None
         if backup_post_id:
-            record_published(backup_post_id, post_id, text, caption, "reel")
+            record_published(backup_post_id, post_id, text, caption, "reel",
+                             pagina=pagina_id)
             mark_published_now("auto")
             _anotar_formato("reel")
             # Solo cuando el video salió de verdad: así el próximo abre distinto.
             _anotar_arranque(guion.get("narracion") if guion else "")
-            log(f"Post {post_id} -> publicado como reel {backup_post_id}")
+            log(f"Post {post_id} -> publicado como reel {backup_post_id} en {nombre_pagina}.")
             # El mismo archivo, ya renderizado, también a Instagram. Va al final
             # y envuelto: si falla, el reel de Facebook ya salió y quedó anotado.
             try:
-                insta.publicar_reel(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP,
+                insta.publicar_reel(pagina_id, pagina_token,
                                     backup_post_id, caption, reel_path, log=log)
             except Exception as e:
                 log(f"Instagram quedó afuera esta vez ({e}); el reel ya salió.")
@@ -2031,21 +2166,21 @@ def process_post(post, tmpdir, allow_publish=True):
                                  log=log)
             return "published"
 
-    result = publish_photo(out_path, caption)
+    result = publish_photo(out_path, caption, pagina_id=pagina_id, pagina_token=pagina_token)
     backup_post_id = result.get("post_id") or result.get("id")
-    record_published(backup_post_id, post_id, text, caption, "foto")
+    record_published(backup_post_id, post_id, text, caption, "foto", pagina=pagina_id)
     mark_published_now("auto")
     _anotar_formato("foto")
-    log(f"Post {post_id} -> publicado como {backup_post_id}")
+    log(f"Post {post_id} -> publicado como {backup_post_id} en {nombre_pagina}.")
     # La misma foto y la misma descripción, ya hechas, van también a Instagram.
     # Va DESPUÉS de todo lo de Facebook y no devuelve nada que se use: si falla,
-    # el post de la página 2 ya salió y quedó anotado igual. Las diapositivas
-    # solo se arman si la apilada no entra, así no se gasta trabajo al pedo.
+    # el post ya salió y quedó anotado igual. Las diapositivas solo se arman si
+    # la apilada no entra, así no se gasta trabajo al pedo.
     try:
         sueltas = []
         if not insta.forma(out_path, log=lambda *a: None)[0]:
             sueltas = armar_diapositivas(local_images, edit, tmpdir)
-        insta.publicar_foto(PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP, result, caption,
+        insta.publicar_foto(pagina_id, pagina_token, result, caption,
                             ruta=out_path, diapositivas=sueltas, log=log)
     except Exception as e:
         log(f"Instagram quedó afuera esta vez ({e}); el post ya salió igual.")
@@ -2328,7 +2463,7 @@ def reenviar_video_al_chat(pedido, tmpdir):
 
 
 def record_published(backup_post_id, source_post_id, source_text, caption,
-                     formato="foto"):
+                     formato="foto", pagina=None):
     """Guarda el mapeo post-de-CAM1 -> post-original, para poder regenerar luego."""
     try:
         data = {}
@@ -2342,6 +2477,11 @@ def record_published(backup_post_id, source_post_id, source_text, caption,
             # botón de "hacé el video": a los que ya salieron como video, no.
             # Los registros viejos no lo tienen y se toman como desconocidos.
             "formato": formato,
+            # A qué página salió. Antes esto era siempre la página 2, así que
+            # los registros viejos no lo tienen; se toman como página 2.
+            # Sirve para que el panel de republicar no ofrezca reenviar a la
+            # página 2 algo que en realidad salió en la 3, o viceversa.
+            "pagina_destino": str(pagina) if pagina else str(PAGE_ID_BACKUP),
             "ts": os.environ.get("GITHUB_RUN_ID", ""),
             # Hora real de publicación, para poder decir "hace cuánto" en el chat.
             "when": time.time(),
