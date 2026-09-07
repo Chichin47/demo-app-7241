@@ -207,14 +207,23 @@ jobs:
       # Página 3 (destino APARTE, solo para los posts con #lagranjavip):
       # Universo Reality Tv Mexico (facebook.com/universorealitytvmexico).
       #
-      # Se probó primero configurándola por su nombre de usuario
-      # (universorealitytvmexico), pensando que el bot podía resolver el
-      # número él solo la primera vez que pide la llave. Pero Meta contestó
-      # error 100 ("Object does not exist... requires the
-      # 'pages_read_engagement' feature") al pedir la llave POR NOMBRE, algo
-      # que no le pasa a la página 2 (que sí está por número). Por eso acá va
-      # directo el ID numérico: facebook.com/61550471444829 redirige a esta
-      # misma página, así que es su ID de verdad (confirmado a mano).
+      # Se probó primero por el nombre de usuario (universorealitytvmexico) y
+      # después con 61550471444829 (el número al que redirige
+      # facebook.com/universorealitytvmexico). Ninguno de los dos funcionó: el
+      # nombre dio error 100 ("requires pages_read_engagement") y el número
+      # dio "Object with ID ... does not exist, cannot be loaded due to
+      # missing permissions". Esto último hizo pensar en un problema de
+      # permisos del USER_TOKEN, pero no lo era: se confirmó a mano en el
+      # Graph API Explorer, generando el token de la propia página desde el
+      # selector "User or Page" (que YA la lista, sin pedir ningún permiso
+      # nuevo) y pidiendo GET /me con ese token — devuelve
+      # {"id": "568676173170640", "name": "Universo Reality tv Mexico"}. O
+      # sea que 61550471444829 nunca fue el ID de la página para la Graph
+      # API: es el ID de perfil que usa Facebook para su pantalla de "Editar
+      # el perfil" (esta página es de las nuevas que además tienen esa careta
+      # de perfil), pero el nodo Page real es 568676173170640. Con el ID
+      # correcto no hace falta ningún token nuevo: el USER_TOKEN de siempre
+      # ya tiene acceso.
       #
       # Esto es opcional a propósito: si el día de mañana esta página se borra
       # o deja de hacer falta, alcanza con borrar este paso y la variable
@@ -222,8 +231,8 @@ jobs:
       # apartarse al chat en vez de fallar el turno.
       - name: Pagina 3
         run: |
-          echo "PAGE_ID_TERCERA=61550471444829" >> "$GITHUB_ENV"
-          echo "Página 3 (aparte, solo #lagranjavip): Universo Reality Tv Mexico (61550471444829)."
+          echo "PAGE_ID_TERCERA=568676173170640" >> "$GITHUB_ENV"
+          echo "Página 3 (aparte, solo #lagranjavip): Universo Reality Tv Mexico (568676173170640)."
 
       # Siempre se parte de la ÚLTIMA versión del estado que hay en el
       # repositorio, no de la del commit con el que arrancó este turno.
