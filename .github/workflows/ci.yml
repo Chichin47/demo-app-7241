@@ -204,6 +204,20 @@ jobs:
           echo "PAGE_ID_BACKUP=901214443065966" >> "$GITHUB_ENV"
           echo "Página 2 (publica): Universo Reality (901214443065966)."
 
+      # Página 3 (destino APARTE, solo para los posts con #lagranjavip):
+      # Universo Reality Tv Mexico (facebook.com/universorealitytvmexico).
+      # Se configura por el nombre de usuario de la página, no por su número:
+      # el bot mismo lo resuelve al arrancar (con USER_TOKEN, igual que
+      # consigue la llave) y de ahí en más usa el número real. Esto es
+      # opcional a propósito: si el día de mañana esta página se borra o deja
+      # de hacer falta, alcanza con borrar este paso y la variable
+      # PAGE_ID_TERCERA desaparece, y los posts con #lagranjavip vuelven a
+      # apartarse al chat en vez de fallar el turno.
+      - name: Pagina 3
+        run: |
+          echo "PAGE_ID_TERCERA=universorealitytvmexico" >> "$GITHUB_ENV"
+          echo "Página 3 (aparte, solo #lagranjavip): Universo Reality Tv Mexico."
+
       # Siempre se parte de la ÚLTIMA versión del estado que hay en el
       # repositorio, no de la del commit con el que arrancó este turno.
       # Motivo: las corridas programadas se crean con la foto del repositorio
@@ -297,6 +311,15 @@ jobs:
           # nada, igual que #UR. Dejándola vacía, la regla se apaga entera y
           # todo vuelve a publicarse como siempre.
           ETIQUETA_APARTE: "#topchefvip5"
+          # La marca que manda el post a la PÁGINA 3 (Universo Reality Tv
+          # Mexico) en vez de a la página 2. A diferencia de ETIQUETA_APARTE,
+          # esto SÍ se publica solo, automático; nada más que en otra página.
+          # No se borra del texto: es un hashtag de verdad, como #topchefvip5.
+          #
+          # Si el día de mañana la página 3 dejara de existir o de tener
+          # llave, un post con esta marca NO se publica por error en la
+          # página 2: se aparta al chat, igual que #topchefvip5.
+          ETIQUETA_LAGRANJA: "#lagranjavip"
           # FRENO DE MANO. En 1, el bot NO publica nada en automático: prepara
           # todo igual —imagen, descripción y video si lleva #UR— y te lo manda
           # al chat de Telegram para que lo subas a mano. Facebook e Instagram
