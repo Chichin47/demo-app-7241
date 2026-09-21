@@ -54,6 +54,16 @@ PAGE_TOKEN_BACKUP = os.environ["PAGE_TOKEN_BACKUP"]
 # peor, terminar publicados por error en la página 2.
 PAGE_ID_TERCERA = os.environ.get("PAGE_ID_TERCERA", "").strip()
 PAGE_TOKEN_TERCERA = os.environ.get("PAGE_TOKEN_TERCERA", "").strip()
+
+# Página 4 (Universo Reality Tv Mexico Lives, la ex página 1): destino aparte,
+# solo para los posts de la página 1 que llevan la marca #UR (ETIQUETA_VIDEO,
+# más abajo). Esa marca sigue forzando el formato video como siempre; esto
+# suma que ADEMÁS cambia el destino. Igual que la página 3, es OPCIONAL: si no
+# se define PAGE_ID_CUARTA, #UR sigue forzando el video, pero esos posts se
+# van "aparte" al chat en vez de fallar el turno o publicarse por error en el
+# destino por defecto.
+PAGE_ID_CUARTA = os.environ.get("PAGE_ID_CUARTA", "").strip()
+PAGE_TOKEN_CUARTA = os.environ.get("PAGE_TOKEN_CUARTA", "").strip()
 # La API de Anthropic ya no se usa en ninguna parte de este proyecto. El texto
 # (descripciones, frases sobre la foto y guiones) se le pide a Claude Code con
 # la llave de la suscripción, que ya está pagada. No queda ningún camino que
@@ -361,10 +371,13 @@ def _resolver_id_numerico(alias, token):
 
 
 def _paginas_en_uso():
-    """(id, nombre) de cada página que el bot usa hoy. La 3 solo si está puesta."""
+    """(id, nombre) de cada página que el bot usa hoy. La 3 y la 4 solo si
+    están puestas."""
     paginas = [(PAGE_ID_MAIN, "página 1"), (PAGE_ID_BACKUP, "página 2")]
     if PAGE_ID_TERCERA:
         paginas.append((PAGE_ID_TERCERA, "página 3"))
+    if PAGE_ID_CUARTA:
+        paginas.append((PAGE_ID_CUARTA, "página 4"))
     return paginas
 
 
@@ -372,7 +385,7 @@ def _aplicar_llaves(llaves):
     """Copia lo que haya en `llaves` a las variables globales que usa el resto
     del bot. Separado de `_usar_llaves_frescas` para no repetir este bloque
     en la rama "estaba todo en caché" y en la rama "hubo que pedir algo"."""
-    global PAGE_TOKEN_MAIN, PAGE_TOKEN_BACKUP, PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA
+    global PAGE_TOKEN_MAIN, PAGE_TOKEN_BACKUP, PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA, PAGE_ID_CUARTA, PAGE_TOKEN_CUARTA
     if llaves.get(PAGE_ID_MAIN):
         PAGE_TOKEN_MAIN = llaves[PAGE_ID_MAIN]
     if llaves.get(PAGE_ID_BACKUP):
@@ -383,6 +396,12 @@ def _aplicar_llaves(llaves):
         if numerico:
             log(f"Página 3: {PAGE_ID_TERCERA} es el ID real {numerico}; uso el número de ahora en más.")
             PAGE_ID_TERCERA = numerico
+    if PAGE_ID_CUARTA and llaves.get(PAGE_ID_CUARTA):
+        PAGE_TOKEN_CUARTA = llaves[PAGE_ID_CUARTA]
+        numerico = _resolver_id_numerico(PAGE_ID_CUARTA, PAGE_TOKEN_CUARTA)
+        if numerico:
+            log(f"Página 4: {PAGE_ID_CUARTA} es el ID real {numerico}; uso el número de ahora en más.")
+            PAGE_ID_CUARTA = numerico
 
 
 def _usar_llaves_frescas():
@@ -1878,22 +1897,49 @@ def va_a_lagranja(texto):
     return lleva_marca_lagranja(texto) and pagina_lagranja_lista()
 
 
+def pagina_ur_lista():
+    """¿Hay a dónde mandar los posts con #UR? Hace falta el ID Y la llave."""
+    return bool(PAGE_ID_CUARTA and PAGE_TOKEN_CUARTA)
+
+
+def va_a_ur(texto):
+    """¿Este post va a la página 4 (Universo Reality Tv Mexico Lives, la ex
+    página 1) en vez de al destino por defecto?
+
+    Se activa con la misma marca #UR que fuerza el formato video (ver
+    `pide_video`): #UR ahora hace las dos cosas a la vez, forzar el video Y
+    cambiar el destino. Se publica solo, automático; nada más que en otra
+    página.
+
+    #lagranjavip manda primero: si el post trae las dos marcas, va a la
+    página 3 igual que siempre (`va_a_lagranja` no mira esto).
+
+    Si la página 4 todavía no está lista (falta configurarla, o hoy Meta no
+    dio su llave), el post NO se pierde ni se manda por error al destino por
+    defecto: `va_aparte` lo toma como apartado mientras tanto.
+    """
+    return pide_video(texto) and not lleva_marca_lagranja(texto) and pagina_ur_lista()
+
+
 def va_aparte(texto):
     """¿Este post es para apartar en vez de publicarlo?
 
     Se prepara igual que cualquier otro —misma imagen, misma descripción— pero
-    en vez de ir a la página 2 se manda al chat y ahí queda. No toca Facebook
-    ni Instagram ni el reloj de publicaciones.
+    en vez de ir a su destino normal se manda al chat y ahí queda. No toca
+    Facebook ni Instagram ni el reloj de publicaciones.
 
-    Van acá TRES motivos, y los tres valen: que el post traiga la marca de
-    apartar, que esté puesto el freno de mano que aparta TODO, o que traiga la
+    Van acá CUATRO motivos, y los cuatro valen: que el post traiga la marca de
+    apartar, que esté puesto el freno de mano que aparta TODO, que traiga la
     marca de La Granja VIP pero la página 3 todavía no esté lista para
-    recibirla (ver `va_a_lagranja`). Este último es una red de seguridad: sin
-    ella, un post de La Granja VIP con la página 3 caída terminaría publicado
-    por error en la página 2, que es justo lo que esta marca quiere evitar.
+    recibirla (ver `va_a_lagranja`), o que traiga #UR pero la página 4
+    todavía no esté lista (ver `va_a_ur`). Estos dos últimos son una red de
+    seguridad: sin ella, un post con la página de destino caída terminaría
+    publicado por error en el destino por defecto, que es justo lo que esas
+    marcas quieren evitar.
     """
     return (solo_telegram() or lleva_marca_aparte(texto)
-            or (lleva_marca_lagranja(texto) and not pagina_lagranja_lista()))
+            or (lleva_marca_lagranja(texto) and not pagina_lagranja_lista())
+            or (pide_video(texto) and not lleva_marca_lagranja(texto) and not pagina_ur_lista()))
 
 
 def programa_de(texto):
@@ -2023,11 +2069,12 @@ def process_post(post, tmpdir, allow_publish=True):
     # no reciba varios posts de golpe, y estos no van a la página 2: van a tu
     # chat, para que los repostees a mano en otro lado. Hacerlos esperar 10
     # minutos era freno sin motivo.
-    # Lo mismo vale para #lagranjavip cuando la página 3 está lista: tampoco
-    # toca la página 2 (va a Universo Reality Tv Mexico), así que tampoco
-    # tiene sentido hacerlo esperar el espaciado de la página 2.
+    # Lo mismo vale para #lagranjavip y para #UR cuando sus páginas están
+    # listas: ninguno de los dos toca la página 2 (van a Universo Reality Tv
+    # Mexico o a Universo Reality Tv Mexico Lives), así que tampoco tiene
+    # sentido hacerlos esperar el espaciado de la página 2.
     if (not allow_publish and not DRY_RUN
-            and not va_aparte(text) and not va_a_lagranja(text)):
+            and not va_aparte(text) and not va_a_lagranja(text) and not va_a_ur(text)):
         log(f"Post {post_id}: publicable, pero toca esperar el turno; queda pendiente.")
         return "deferred"
 
@@ -2053,14 +2100,16 @@ def process_post(post, tmpdir, allow_publish=True):
     programa = programa_de(text)
     # Los apartados van al chat para subida manual: ahí decide el administrador,
     # no el filtro editorial, así que a Claude se le prohíbe omitirlos. Lo
-    # mismo vale para los de La Granja VIP: ya se decidió a mano que esto se
-    # publica (en la página 3), así que tampoco puede omitirlos.
+    # mismo vale para los de La Granja VIP y los de #UR: ya se decidió a mano
+    # que esto se publica (en la página 3 o en la 4), así que tampoco pueden
+    # omitirlos.
     es_aparte = va_aparte(text)
     a_lagranja = va_a_lagranja(text)
+    a_ur = va_a_ur(text)
     edit = ask_claude(texto_limpio, len(local_images), con_video=con_video,
-                      programa=programa, aparte=(es_aparte or a_lagranja))
+                      programa=programa, aparte=(es_aparte or a_lagranja or a_ur))
     if edit.get("skip"):
-        if es_aparte or a_lagranja:
+        if es_aparte or a_lagranja or a_ur:
             # Red de seguridad: no debería pasar con el pedido reforzado, pero
             # si igual lo omite, al chat va la foto original con el texto tal
             # cual. Peor sería que el apartado (o el de La Granja VIP, que acá
@@ -2145,16 +2194,20 @@ def process_post(post, tmpdir, allow_publish=True):
         return "apartado"
 
     # A qué página va este post en concreto. Por defecto, la de siempre (la
-    # 2); si trae #lagranjavip Y la página 3 está lista (si no lo estuviera,
-    # `va_aparte` ya lo habría cortado arriba), va a la 3 en su lugar. Todo lo
-    # de abajo —Facebook, Instagram, el registro— usa esto, así el post entero
+    # 2); si trae #lagranjavip Y la página 3 está lista, va a la 3; si no,
+    # pero trae #UR Y la página 4 está lista, va a la 4 (si ninguna de las dos
+    # estuviera lista, `va_aparte` ya lo habría cortado arriba). Todo lo de
+    # abajo —Facebook, Instagram, el registro— usa esto, así el post entero
     # sale de punta a punta en la misma página.
     if a_lagranja:
         pagina_id, pagina_token = PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA
         nombre_pagina = "página 3 (Universo Reality Tv Mexico)"
+    elif a_ur:
+        pagina_id, pagina_token = PAGE_ID_CUARTA, PAGE_TOKEN_CUARTA
+        nombre_pagina = "página 4 (Universo Reality Tv Mexico Lives)"
     else:
         pagina_id, pagina_token = PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP
-        nombre_pagina = "página 2"
+        nombre_pagina = "página 2 (Universo Reality)"
 
     if formato == "reel" and reel_path:
         try:
@@ -2169,9 +2222,9 @@ def process_post(post, tmpdir, allow_publish=True):
             record_published(backup_post_id, post_id, text, caption, "reel",
                              pagina=pagina_id)
             # El reloj de espaciado es para no inundar la página 2: si esto
-            # fue a la 3 (#lagranjavip), no la tocó, así que no tiene que
-            # frenar al próximo post normal de la página 2.
-            if not a_lagranja:
+            # fue a la 3 (#lagranjavip) o a la 4 (#UR), no la tocó, así que
+            # no tiene que frenar al próximo post normal de la página 2.
+            if not a_lagranja and not a_ur:
                 mark_published_now("auto")
             _anotar_formato("reel")
             # Solo cuando el video salió de verdad: así el próximo abre distinto.
@@ -2194,8 +2247,9 @@ def process_post(post, tmpdir, allow_publish=True):
     backup_post_id = result.get("post_id") or result.get("id")
     record_published(backup_post_id, post_id, text, caption, "foto", pagina=pagina_id)
     # Mismo motivo que en el reel: el reloj de espaciado protege a la página
-    # 2, así que un post que fue a la 3 (#lagranjavip) no lo debe mover.
-    if not a_lagranja:
+    # 2, así que un post que fue a la 3 (#lagranjavip) o a la 4 (#UR) no lo
+    # debe mover.
+    if not a_lagranja and not a_ur:
         mark_published_now("auto")
     _anotar_formato("foto")
     log(f"Post {post_id} -> publicado como {backup_post_id} en {nombre_pagina}.")
@@ -2671,15 +2725,17 @@ def main():
     # vez de gotear de a uno. El tope de APARTADOS_POR_CORRIDA está para que un
     # aluvión no haga eterna una sola vuelta; lo que sobre sale en la siguiente,
     # tres minutos después.
-    # Los de #lagranjavip (cuando la página 3 ya está lista) entran en el mismo
-    # grupo y por el mismo motivo: tampoco tocan la página 2, así que tampoco
-    # tiene sentido que esperen el cupo pensado para ella.
+    # Los de #lagranjavip (cuando la página 3 ya está lista) y los de #UR
+    # (cuando la página 4 ya está lista) entran en el mismo grupo y por el
+    # mismo motivo: tampoco tocan la página 2, así que tampoco tiene sentido
+    # que esperen el cupo pensado para ella.
     ids_aparte = {p["id"] for p in candidatos
-                  if va_aparte(p.get("message") or "") or va_a_lagranja(p.get("message") or "")}
+                  if va_aparte(p.get("message") or "") or va_a_lagranja(p.get("message") or "")
+                  or va_a_ur(p.get("message") or "")}
     apartados = [p for p in candidatos if p["id"] in ids_aparte][:APARTADOS_POR_CORRIDA]
     normales = [p for p in candidatos if p["id"] not in ids_aparte]
     if apartados:
-        log(f"{len(apartados)} post(s) van sin esperar turno (apartados y/o #lagranjavip).")
+        log(f"{len(apartados)} post(s) van sin esperar turno (apartados y/o #lagranjavip/#UR).")
     new_posts = apartados + normales[:MAX_POSTS_PER_RUN]
 
     if not new_posts:
