@@ -174,35 +174,55 @@ jobs:
           echo "Separación mínima entre publicaciones: 10 min."
 
       # Página 1 (la que se LEE, donde escribís los originales): Universo
-      # Reality Tv Mexico Lives, que además es donde cuelga el Instagram.
-      # Como respaldo sirve el secreto PAGE2_TOKEN, que guarda su llave; al
-      # arrancar el bot igual pide llaves frescas con USER_TOKEN y esas mandan.
+      # Reality Live (facebook.com/universorealitylives). Reemplaza a la
+      # vieja página 1 (Universo Reality Tv Mexico Lives), que ahora pasa a
+      # ser la página 4 (destino aparte para los posts con #UR, ver más
+      # abajo).
+      #
+      # El ID real (152876094571606) se confirmó a mano en el Graph API
+      # Explorer, igual que se hizo para la página 3: se generó el token de
+      # esta página desde el selector "User or Page" y se pidió GET /me con
+      # ese token, que devolvió {"id": "152876094571606", "name": "Universo
+      # Reality Tv En Vivo"}. Como es una página de las nuevas, no aparece en
+      # /me/accounts; el bot igual consigue su llave pidiéndola suelta (ver
+      # `_llave_suelta` en poll_and_publish.py), como ya hacía con la 3.
       #
       # Cada vez que se cambia cuál es la página 1, el bot anota como "ya
       # vistas" las publicaciones que esa página ya tenía, para no republicar
-      # lo viejo ni lo que él mismo dejó ahí cuando era el destino.
+      # lo viejo ni lo que él mismo dejó ahí cuando era el destino. Con este
+      # cambio, en la primera corrida con la página nueva no se publica nada
+      # de su historial: recién entra lo que se escriba de ahora en más.
       - name: Pagina 1
         env:
           PAGE2_TOKEN: ${{ secrets.PAGE2_TOKEN }}
         run: |
-          echo "PAGE_ID_MAIN=179820098545682" >> "$GITHUB_ENV"
-          echo "Página 1 (origen, donde escribís): Universo Reality Tv Mexico Lives (179820098545682)."
+          echo "PAGE_ID_MAIN=152876094571606" >> "$GITHUB_ENV"
+          echo "Página 1 (origen, donde escribís): Universo Reality Live (152876094571606)."
           if [ -n "$PAGE2_TOKEN" ]; then
             echo "::add-mask::$PAGE2_TOKEN"
             echo "PAGE_TOKEN_MAIN=$PAGE2_TOKEN" >> "$GITHUB_ENV"
           fi
-          # Instagram (@universorealityvip) cuelga de Mexico Lives, que ahora
-          # vuelve a ser la que se lee: la cuenta se busca en esta misma página.
+          # El Instagram (@universorealityvip) NO se mueve con este cambio:
+          # sigue colgado de Universo Reality Tv Mexico Lives (179820098545682,
+          # ahora página 4), así que IG_PAGINA se queda fijo ahí. Ver el paso
+          # "Pagina 4" más abajo.
           echo "IG_PAGINA=179820098545682" >> "$GITHUB_ENV"
 
-      # Página 2 (la que PUBLICA): Universo Reality. Su llave no está en ningún
+      # Página 2 (la que PUBLICA por defecto, sin hashtag): Universo Reality.
+      # Su ID no cambia con esta restructuración (901214443065966): aunque la
+      # página hoy se ve en facebook.com/profile.php?id=61582825765616, ese es
+      # el ID de perfil (la misma trampa que ya picó con la página 3), no el
+      # ID real de Graph API. Se confirmó a mano pidiendo GET
+      # /901214443065966?fields=id,name con el USER_TOKEN, que devolvió
+      # {"id": "901214443065966", "name": "Universo Reality"}: es la misma
+      # página de siempre, nada más que renombrada. Su llave no está en ningún
       # secreto suelto: sale de las llaves frescas que el bot deriva de
       # USER_TOKEN al arrancar, pidiéndola de a una porque esta página no
       # aparece en la lista general de Facebook.
       - name: Pagina 2
         run: |
           echo "PAGE_ID_BACKUP=901214443065966" >> "$GITHUB_ENV"
-          echo "Página 2 (publica): Universo Reality (901214443065966)."
+          echo "Página 2 (publica por defecto): Universo Reality (901214443065966)."
 
       # Página 3 (destino APARTE, solo para los posts con #lagranjavip):
       # Universo Reality Tv Mexico (facebook.com/universorealitytvmexico).
@@ -233,6 +253,26 @@ jobs:
         run: |
           echo "PAGE_ID_TERCERA=568676173170640" >> "$GITHUB_ENV"
           echo "Página 3 (aparte, solo #lagranjavip): Universo Reality Tv Mexico (568676173170640)."
+
+      # Página 4 (destino APARTE, solo para los posts con #UR): Universo
+      # Reality Tv Mexico Lives (facebook.com/universorealitytvmexicolives).
+      # Es la EX página 1: con la restructuración pasa de ser el origen a ser
+      # un destino más, igual que le tocó a la 3. Su ID no cambia
+      # (179820098545682, ya confirmado de antes) y sigue siendo la página de
+      # donde cuelga el Instagram (ver IG_PAGINA en el paso "Pagina 1").
+      #
+      # #UR sigue haciendo lo de siempre además de esto: fuerza que el post
+      # salga en video (ETIQUETA_VIDEO, más abajo). Ahora hace las dos cosas
+      # juntas.
+      #
+      # Opcional a propósito, igual que la página 3: si el día de mañana esta
+      # página se borra o deja de hacer falta, alcanza con borrar este paso y
+      # la variable PAGE_ID_CUARTA desaparece; los posts con #UR vuelven a
+      # apartarse al chat (#UR igual sigue forzando el video).
+      - name: Pagina 4
+        run: |
+          echo "PAGE_ID_CUARTA=179820098545682" >> "$GITHUB_ENV"
+          echo "Página 4 (aparte, solo #UR): Universo Reality Tv Mexico Lives (179820098545682)."
 
       # Siempre se parte de la ÚLTIMA versión del estado que hay en el
       # repositorio, no de la del commit con el que arrancó este turno.
@@ -300,22 +340,32 @@ jobs:
           INSTAGRAM: ${{ vars.INSTAGRAM || '1' }}
           # Nombre de la voz clonada en el panel de ai33.pro.
           VOZ_NOMBRE: "VEXVIP"
-          # La marca que decide el formato. Antes el video se repartía por
+          # La marca que decide el formato Y, desde la restructuración de
+          # páginas, TAMBIÉN el destino. Antes el video se repartía por
           # turnos (uno de cada tres); ahora no se sortea, se pide: si el
           # original de la página 1 lleva esta marca en el texto, esa
-          # publicación sale en video en la página 2; si no la lleva, sale en
-          # foto. Los videos rinden bastante menos que las fotos, así que el
-          # video pasó a ser la excepción elegida a mano.
+          # publicación sale en video (si no la lleva, sale en foto) Y además
+          # se manda a la página 4 (Universo Reality Tv Mexico Lives, la ex
+          # página 1) en vez de al destino por defecto — ver PAGE_ID_CUARTA en
+          # el paso "Pagina 4", más arriba. Las dos cosas pasan juntas, a
+          # propósito. Los videos rinden bastante menos que las fotos, así que
+          # el video pasó a ser la excepción elegida a mano.
           #
           # La marca se busca como palabra entera (#UR no se confunde con
           # #URTV) y se borra del texto antes de publicar: es una orden interna
           # para el bot, no parte de la descripción. El botón 🎬 del panel
-          # sigue mandando por encima de esto.
+          # sigue mandando por encima del formato (no del destino).
+          #
+          # Si el post lleva #UR pero también #lagranjavip, manda
+          # #lagranjavip para el destino (va a la página 3); #UR igual sigue
+          # forzando el video. Y si la página 4 no está lista (falta
+          # PAGE_ID_CUARTA o hoy Meta no dio su llave), el post con #UR no se
+          # publica por error en el destino por defecto: se aparta al chat.
           #
           # Ojo con lo que NO cambia esto: de la página 1 se toman SOLO las
           # fotos. Los posts que allá son video se siguen saltando enteros, y
-          # así se quedan. El video de la página 2 se arma siempre a partir de
-          # la foto del post, moviéndola; nunca se usa un clip ajeno.
+          # así se quedan. El video se arma siempre a partir de la foto del
+          # post, moviéndola; nunca se usa un clip ajeno.
           ETIQUETA_VIDEO: "#UR"
           # La marca que APARTA el post. Si el original de la página 1 la
           # lleva, se prepara todo igual —la imagen y la descripción, y el
