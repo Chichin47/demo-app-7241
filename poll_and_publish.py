@@ -1902,23 +1902,24 @@ def pagina_ur_lista():
     return bool(PAGE_ID_CUARTA and PAGE_TOKEN_CUARTA)
 
 
-def va_a_ur(texto):
-    """¿Este post va a la página 4 (Universo Reality Tv Mexico Lives, la ex
-    página 1) en vez de al destino por defecto?
+def video_extra_listo(texto):
+    """¿Hay que darle a este post, ADEMÁS de su foto de siempre, un video
+    aparte en la página 4 (Universo Reality Tv Mexico Lives)?
 
-    Se activa con la misma marca #UR que fuerza el formato video (ver
-    `pide_video`): #UR ahora hace las dos cosas a la vez, forzar el video Y
-    cambiar el destino. Se publica solo, automático; nada más que en otra
-    página.
+    #UR ya NO elige una página distinta para el post entero: la foto sigue
+    saliendo donde siempre le tocaría (la página 3 si además lleva
+    #lagranjavip, si no la página 2, la de por defecto). Lo único que #UR
+    agrega es que, ADEMÁS de esa foto, se publique también un video, y ese
+    video va aparte, a la página 4. Da igual que #UR venga solo o junto con
+    #lagranjavip: el resultado del lado del video es siempre el mismo, la
+    página 4.
 
-    #lagranjavip manda primero: si el post trae las dos marcas, va a la
-    página 3 igual que siempre (`va_a_lagranja` no mira esto).
-
-    Si la página 4 todavía no está lista (falta configurarla, o hoy Meta no
-    dio su llave), el post NO se pierde ni se manda por error al destino por
-    defecto: `va_aparte` lo toma como apartado mientras tanto.
+    Hace falta que la página 4 esté lista (ID y llave). Si no lo está, el
+    post no se pierde ni se aparta por eso: la foto sale igual en su
+    destino de siempre y el video queda avisado aparte por Telegram (ver el
+    bloque del video extra en `process_post`).
     """
-    return pide_video(texto) and not lleva_marca_lagranja(texto) and pagina_ur_lista()
+    return pide_video(texto) and pagina_ur_lista()
 
 
 def va_aparte(texto):
@@ -1928,18 +1929,21 @@ def va_aparte(texto):
     en vez de ir a su destino normal se manda al chat y ahí queda. No toca
     Facebook ni Instagram ni el reloj de publicaciones.
 
-    Van acá CUATRO motivos, y los cuatro valen: que el post traiga la marca de
-    apartar, que esté puesto el freno de mano que aparta TODO, que traiga la
-    marca de La Granja VIP pero la página 3 todavía no esté lista para
-    recibirla (ver `va_a_lagranja`), o que traiga #UR pero la página 4
-    todavía no esté lista (ver `va_a_ur`). Estos dos últimos son una red de
-    seguridad: sin ella, un post con la página de destino caída terminaría
-    publicado por error en el destino por defecto, que es justo lo que esas
-    marcas quieren evitar.
+    Van acá TRES motivos, y los tres valen: que el post traiga la marca de
+    apartar, que esté puesto el freno de mano que aparta TODO, o que traiga
+    la marca de La Granja VIP pero la página 3 todavía no esté lista para
+    recibirla (ver `va_a_lagranja`). Este último es una red de seguridad:
+    sin ella, un post de La Granja VIP con la página 3 caída terminaría
+    publicado por error en el destino por defecto, que es justo lo que esa
+    marca quiere evitar.
+
+    #UR YA NO aparta nada por su cuenta: si pide video y la página 4 no está
+    lista, la foto de este post sale igual en su destino de siempre (la 3 o
+    la 2, según corresponda) y solo se avisa por Telegram que el video no
+    se pudo mandar (ver `video_extra_listo`).
     """
     return (solo_telegram() or lleva_marca_aparte(texto)
-            or (lleva_marca_lagranja(texto) and not pagina_lagranja_lista())
-            or (pide_video(texto) and not lleva_marca_lagranja(texto) and not pagina_ur_lista()))
+            or (lleva_marca_lagranja(texto) and not pagina_lagranja_lista()))
 
 
 def programa_de(texto):
@@ -1995,16 +1999,16 @@ def _anotar_formato(formato):
 
 
 def elegir_formato(guion, cuantas_fotos, forzado=None, texto=""):
-    """Devuelve "reel" o "foto", con el motivo, para dejarlo en el log.
+    """Devuelve "reel" o "foto" para la publicación PRINCIPAL (la de
+    siempre: la página 3 si el post lleva #lagranjavip, si no la página 2).
 
-    En automático el formato ya no se sortea: sale video solo si el original de
-    la página 1 lleva la marca (por defecto #UR). Sin marca, foto. Lo que se
-    manda a mano desde el bot no cambia: si el administrador pidió un formato,
-    ese manda por encima de todo.
-
-    Aun con la marca, el video necesita voz configurada y guion de Claude. Si
-    falta alguno sale foto —que nunca falla— y el motivo queda escrito, para no
-    quedarse con la duda de por qué el #UR no dio video.
+    #UR ya NO decide el formato de la publicación principal: esa marca
+    ahora solo agrega, ADEMÁS, un video aparte en la página 4 (ver
+    `video_extra_listo` y el bloque del video extra en `process_post`).
+    Acá, en automático, la publicación principal siempre sale en foto; el
+    único motivo para que salga en video es que el administrador lo haya
+    pedido a mano desde el panel (`forzado="reel"`), y en ese caso, igual
+    que antes, hace falta voz configurada y guion de Claude.
     """
     if forzado in ("foto", "reel"):
         if forzado == "reel" and not (guion and voz.hay_voz()):
@@ -2012,13 +2016,8 @@ def elegir_formato(guion, cuantas_fotos, forzado=None, texto=""):
         return forzado, "lo pidió el administrador"
     if not cuantas_fotos:
         return "foto", "no hay fotos"
-    if not pide_video(texto):
-        return "foto", f"el original no lleva {ETIQUETA_VIDEO}"
-    if not voz.hay_voz():
-        return "foto", f"lleva {ETIQUETA_VIDEO} pero falta la voz (VOZ_API_KEY)"
-    if not guion:
-        return "foto", f"lleva {ETIQUETA_VIDEO} pero Claude no dejó guion narrado"
-    return "reel", f"el original lleva {ETIQUETA_VIDEO}"
+    return "foto", ("la publicación principal siempre sale en foto; si lleva "
+                    f"{ETIQUETA_VIDEO}, el video sale aparte en la página 4")
 
 
 def armar_reel(local_images, guion, tmpdir):
@@ -2045,6 +2044,57 @@ def armar_reel(local_images, guion, tmpdir):
     return salida
 
 
+def publicar_video_extra(reel_extra_path, caption, post_id, texto_original=""):
+    """Publica en la página 4 (Universo Reality Tv Mexico Lives) el video
+    EXTRA de un post con #UR.
+
+    Es "extra" porque la publicación principal de ese mismo post (la foto,
+    en la página 2 o la 3) ya salió aparte, en `process_post`, antes de
+    llamar acá: esto es nada más el video de más, en su propia página, y no
+    toca el reloj de espaciado (`mark_published_now`) porque ese reloj es
+    solo para no inundar la página 2 y esto no es la página 2.
+
+    Devuelve (id_publicado, None) si salió bien, o (None, motivo) si no.
+    Nunca revienta: un video extra que falla no puede tirar abajo la
+    publicación principal, que para cuando esto se llama ya salió.
+    """
+    try:
+        video_id = publish_reel(reel_extra_path, caption,
+                                pagina_id=PAGE_ID_CUARTA, pagina_token=PAGE_TOKEN_CUARTA)
+    except Exception as e:
+        log(f"Falló la publicación del video extra de #UR en la página 4 ({e}).")
+        return None, str(e)
+    record_published(video_id, post_id, texto_original, caption, "reel",
+                     pagina=PAGE_ID_CUARTA)
+    _anotar_formato("reel")
+    # El seguimiento de cómo abrió la narración (`_anotar_arranque`) lo hace
+    # `process_post`, que es quien tiene el guion a mano; acá solo se
+    # publica.
+    log(f"Post {post_id} -> video extra de #UR publicado como reel {video_id} "
+        f"en página 4 (Universo Reality Tv Mexico Lives).")
+    try:
+        insta.publicar_reel(PAGE_ID_CUARTA, PAGE_TOKEN_CUARTA, video_id, caption,
+                            reel_extra_path, log=log)
+    except Exception as e:
+        log(f"Instagram (página 4) quedó afuera esta vez ({e}); el reel ya salió.")
+    mandar_video_al_chat(reel_extra_path, caption,
+                         f"https://www.facebook.com/{video_id}", log=log)
+    return video_id, None
+
+
+def _aviso_video_extra_caido(motivo):
+    """El mensaje de Telegram cuando un post con #UR publicó su foto normal
+    pero el video extra para la página 4 no se pudo mandar."""
+    return (
+        f"⚠️ Este post llevaba {ETIQUETA_VIDEO}: la foto ya salió en su "
+        f"página de siempre, pero el video extra para Universo Reality Tv "
+        f"Mexico Lives (página 4) no se pudo mandar.\n\n"
+        f"Motivo: {str(motivo or '')[:400]}\n\n"
+        f"La foto ya está publicada; si querés el video igual, entrá a "
+        f"📚 Publicados y pedíselo desde ahí, o subilo a mano a esa página."
+    )
+
+
 def process_post(post, tmpdir, allow_publish=True):
     post_id = post["id"]
     kind, images = classify_attachment(post)
@@ -2069,12 +2119,15 @@ def process_post(post, tmpdir, allow_publish=True):
     # no reciba varios posts de golpe, y estos no van a la página 2: van a tu
     # chat, para que los repostees a mano en otro lado. Hacerlos esperar 10
     # minutos era freno sin motivo.
-    # Lo mismo vale para #lagranjavip y para #UR cuando sus páginas están
-    # listas: ninguno de los dos toca la página 2 (van a Universo Reality Tv
-    # Mexico o a Universo Reality Tv Mexico Lives), así que tampoco tiene
-    # sentido hacerlos esperar el espaciado de la página 2.
+    # Lo mismo vale para #lagranjavip: no toca la página 2 (va a Universo
+    # Reality Tv Mexico), así que tampoco tiene sentido hacerlo esperar el
+    # espaciado de la página 2. #UR YA NO exime de esperar turno: su foto
+    # sigue saliendo en el destino de siempre (la 2, salvo que además lleve
+    # #lagranjavip), así que respeta el mismo espaciado que cualquier post
+    # normal; el video extra de la página 4 no tiene reloj propio, sale
+    # junto con esa foto cuando le toque.
     if (not allow_publish and not DRY_RUN
-            and not va_aparte(text) and not va_a_lagranja(text) and not va_a_ur(text)):
+            and not va_aparte(text) and not va_a_lagranja(text)):
         log(f"Post {post_id}: publicable, pero toca esperar el turno; queda pendiente.")
         return "deferred"
 
@@ -2100,16 +2153,22 @@ def process_post(post, tmpdir, allow_publish=True):
     programa = programa_de(text)
     # Los apartados van al chat para subida manual: ahí decide el administrador,
     # no el filtro editorial, así que a Claude se le prohíbe omitirlos. Lo
-    # mismo vale para los de La Granja VIP y los de #UR: ya se decidió a mano
-    # que esto se publica (en la página 3 o en la 4), así que tampoco pueden
-    # omitirlos.
+    # mismo vale para los de La Granja VIP y los que piden video con #UR: ya
+    # se decidió a mano que esto se publica (en la página 3, o con un video
+    # extra en la 4), así que tampoco pueden omitirlos.
     es_aparte = va_aparte(text)
     a_lagranja = va_a_lagranja(text)
-    a_ur = va_a_ur(text)
+    # ¿Este post PIDE video (#UR), lleve o no además #lagranjavip? Esto ya
+    # no elige una página distinta para el post entero: la foto sigue yendo
+    # a su destino de siempre (ver el bloque de routing más abajo) y esto
+    # solo decide si, ADEMÁS, hay que armar y mandar un video aparte a la
+    # página 4 (ver `video_extra_listo`, que suma el chequeo de que esa
+    # página esté lista).
+    quiere_video = pide_video(text)
     edit = ask_claude(texto_limpio, len(local_images), con_video=con_video,
-                      programa=programa, aparte=(es_aparte or a_lagranja or a_ur))
+                      programa=programa, aparte=(es_aparte or a_lagranja or quiere_video))
     if edit.get("skip"):
-        if es_aparte or a_lagranja or a_ur:
+        if es_aparte or a_lagranja or quiere_video:
             # Red de seguridad: no debería pasar con el pedido reforzado, pero
             # si igual lo omite, al chat va la foto original con el texto tal
             # cual. Peor sería que el apartado (o el de La Granja VIP, que acá
@@ -2141,17 +2200,19 @@ def process_post(post, tmpdir, allow_publish=True):
         respaldo = (PROGRAMAS.get(programa) or {}).get("hashtag")
         caption = respaldo or (ETIQUETA_LAGRANJA if a_lagranja else "#LCDLF6")
 
-    # El mismo post puede salir como foto o como reel. La foto ya está armada
-    # arriba y sirve igual de vista previa, así que el video se arma solo si le
-    # toca; si algo falla armándolo, se publica la foto y no se pierde el post.
+    # La publicación PRINCIPAL (la foto, casi siempre) se arma acá. La foto
+    # ya está lista arriba (`out_path`); el reel de esta sección es el que
+    # pidió el administrador a mano desde el panel (`pedido == "reel"`), no
+    # el de #UR, que es aparte (ver más abajo).
     guion = guion_de_reel(edit, texto_limpio) if con_video else None
     formato, motivo = elegir_formato(
         guion, len(local_images), pedido, texto=text
     )
-    log(f"Post {post_id}: sale como {formato} ({motivo}).")
+    log(f"Post {post_id}: la publicación principal sale como {formato} ({motivo}).")
     reel_path = None
-    # Si pidió video y termina en foto, hay que decirlo. Se guarda el porqué acá
-    # y se avisa recién cuando el post ya salió, para no cantar victoria antes.
+    # Si el administrador pidió video a mano y no se pudo armar, hay que
+    # decirlo. Se guarda el porqué acá y se avisa recién cuando el post ya
+    # salió, para no cantar victoria antes.
     video_caido = None
     if formato == "reel":
         try:
@@ -2161,50 +2222,86 @@ def process_post(post, tmpdir, allow_publish=True):
             video_caido = str(e)
             formato, reel_path = "foto", None
 
+    # El video EXTRA de #UR, para la página 4, aparte de la publicación
+    # principal. Usa el mismo guion (si Claude lo dejó): #UR no cambia el
+    # formato de la publicación principal, solo agrega este video de más.
+    # Si el administrador YA forzó un reel arriba (mismo guion), se reusa
+    # ese archivo en vez de renderizarlo dos veces -- `armar_reel` escribe
+    # siempre "reel.mp4" en el mismo tmpdir, así que una segunda pasada
+    # pisaría el primero.
+    reel_extra_path = None
+    video_extra_caido = None
+    if quiere_video:
+        if not pagina_ur_lista():
+            video_extra_caido = ("la página 4 todavía no está lista (falta "
+                                 "configurarla o Meta no dio su llave hoy)")
+        elif not voz.hay_voz():
+            video_extra_caido = f"lleva {ETIQUETA_VIDEO} pero falta la voz (VOZ_API_KEY)"
+        elif not guion:
+            video_extra_caido = f"lleva {ETIQUETA_VIDEO} pero Claude no dejó guion narrado"
+        elif reel_path:
+            reel_extra_path = reel_path
+        else:
+            try:
+                reel_extra_path = armar_reel(local_images, guion, tmpdir)
+            except Exception as e:
+                log(f"No se pudo armar el video extra de #UR para la página 4 ({e}).")
+                video_extra_caido = str(e)
+
     if DRY_RUN:
         preview_dir = BASE_DIR / "dry_run_output"
         preview_dir.mkdir(exist_ok=True)
         stub = post_id.split("_")[-1]
         preview_img = preview_dir / f"{stub}.jpg"
         shutil.copy(out_path, preview_img)
+        nota_extra = ""
+        if quiere_video:
+            nota_extra = (
+                "\n--- VIDEO EXTRA #UR (página 4) ---\n"
+                + ("se arma y se manda a Universo Reality Tv Mexico Lives\n"
+                   if reel_extra_path else
+                   f"NO se pudo armar/mandar: {video_extra_caido}\n")
+            )
         details = (
             f"POST ID: {post_id}\n\n--- TEXTO ORIGINAL ---\n{text}\n\n"
             f"--- FRASES ELEGIDAS ---\n"
             + "\n".join(f"[img {l.get('image_index')}] ({l.get('color')}) {l.get('text')}"
                         for l in edit.get("lines", []))
             + f"\n\n--- DESCRIPCION ALTERNA ---\n{caption}\n"
-            + f"\n--- FORMATO ---\n{formato} ({motivo})\n"
+            + f"\n--- FORMATO (publicación principal) ---\n{formato} ({motivo})\n"
             + (f"\n--- TITULO DEL VIDEO ---\n{guion['titulo']}\n"
                f"\n--- NARRACION ---\n{guion['narracion']}\n" if guion else "")
+            + nota_extra
         )
         (preview_dir / f"{stub}.txt").write_text(details, encoding="utf-8")
         if reel_path:
             shutil.copy(reel_path, preview_dir / f"{stub}.mp4")
+        elif reel_extra_path:
+            shutil.copy(reel_extra_path, preview_dir / f"{stub}_ur.mp4")
         log(f"[DRY_RUN] Preview guardado: {preview_img.name}. Caption: {caption}")
         send_telegram_preview(out_path, caption, details, post_id)
         return "dry_run"
 
     # Apartado: acá se corta. Todo lo de arriba ya se hizo (la imagen está
-    # armada, la descripción escrita y, si llevaba la marca de video, el reel
+    # armada, la descripción escrita y, si correspondía, los videos
     # también), pero de acá no pasa a Facebook. Va al chat y el post queda
     # marcado para que no vuelva a aparecer.
     if va_aparte(text):
-        mandar_aparte(out_path, caption, reel_path, post_id,
-                      video_caido=video_caido, texto_original=text, log=log)
+        mandar_aparte(out_path, caption, reel_path or reel_extra_path, post_id,
+                      video_caido=video_caido or video_extra_caido,
+                      texto_original=text, log=log)
         return "apartado"
 
-    # A qué página va este post en concreto. Por defecto, la de siempre (la
-    # 2); si trae #lagranjavip Y la página 3 está lista, va a la 3; si no,
-    # pero trae #UR Y la página 4 está lista, va a la 4 (si ninguna de las dos
-    # estuviera lista, `va_aparte` ya lo habría cortado arriba). Todo lo de
-    # abajo —Facebook, Instagram, el registro— usa esto, así el post entero
-    # sale de punta a punta en la misma página.
+    # A qué página va la publicación PRINCIPAL (la foto) de este post en
+    # concreto. Por defecto, la de siempre (la 2); si trae #lagranjavip Y
+    # la página 3 está lista, va a la 3 (si no está lista, `va_aparte` ya
+    # cortó el post entero arriba). La página 4 ya NO es un destino de la
+    # publicación principal: es aparte, para el video extra de #UR (más
+    # abajo). Todo lo de acá abajo —Facebook, Instagram, el registro— usa
+    # esto para la publicación principal.
     if a_lagranja:
         pagina_id, pagina_token = PAGE_ID_TERCERA, PAGE_TOKEN_TERCERA
         nombre_pagina = "página 3 (Universo Reality Tv Mexico)"
-    elif a_ur:
-        pagina_id, pagina_token = PAGE_ID_CUARTA, PAGE_TOKEN_CUARTA
-        nombre_pagina = "página 4 (Universo Reality Tv Mexico Lives)"
     else:
         pagina_id, pagina_token = PAGE_ID_BACKUP, PAGE_TOKEN_BACKUP
         nombre_pagina = "página 2 (Universo Reality)"
@@ -2222,9 +2319,9 @@ def process_post(post, tmpdir, allow_publish=True):
             record_published(backup_post_id, post_id, text, caption, "reel",
                              pagina=pagina_id)
             # El reloj de espaciado es para no inundar la página 2: si esto
-            # fue a la 3 (#lagranjavip) o a la 4 (#UR), no la tocó, así que
-            # no tiene que frenar al próximo post normal de la página 2.
-            if not a_lagranja and not a_ur:
+            # fue a la 3 (#lagranjavip), no la tocó, así que no tiene que
+            # frenar al próximo post normal de la página 2.
+            if not a_lagranja:
                 mark_published_now("auto")
             _anotar_formato("reel")
             # Solo cuando el video salió de verdad: así el próximo abre distinto.
@@ -2241,15 +2338,23 @@ def process_post(post, tmpdir, allow_publish=True):
             mandar_video_al_chat(reel_path, caption,
                                  f"https://www.facebook.com/{backup_post_id}",
                                  log=log)
+            # El video EXTRA de #UR, aparte, en la página 4 (si correspondía
+            # y se pudo armar). No pisa nada de lo de arriba: es una
+            # publicación más, en otra página.
+            if reel_extra_path:
+                _, err = publicar_video_extra(reel_extra_path, caption, post_id, text)
+                if err:
+                    video_extra_caido = err
+            if video_extra_caido:
+                avisar(_aviso_video_extra_caido(video_extra_caido))
             return "published"
 
     result = publish_photo(out_path, caption, pagina_id=pagina_id, pagina_token=pagina_token)
     backup_post_id = result.get("post_id") or result.get("id")
     record_published(backup_post_id, post_id, text, caption, "foto", pagina=pagina_id)
     # Mismo motivo que en el reel: el reloj de espaciado protege a la página
-    # 2, así que un post que fue a la 3 (#lagranjavip) o a la 4 (#UR) no lo
-    # debe mover.
-    if not a_lagranja and not a_ur:
+    # 2, así que un post que fue a la 3 (#lagranjavip) no lo debe mover.
+    if not a_lagranja:
         mark_published_now("auto")
     _anotar_formato("foto")
     log(f"Post {post_id} -> publicado como {backup_post_id} en {nombre_pagina}.")
@@ -2266,17 +2371,27 @@ def process_post(post, tmpdir, allow_publish=True):
     except Exception as e:
         log(f"Instagram quedó afuera esta vez ({e}); el post ya salió igual.")
 
-    # Recién ahora, con el post ya publicado: si pedía video y salió foto, se
-    # avisa. Es lo único que el bot hacía bien y no contaba, y por eso parecía
-    # que la marca #UR no funcionaba.
+    # Recién ahora, con el post ya publicado: si el administrador había
+    # pedido video a mano y no se pudo armar, se avisa.
     if video_caido:
         avisar(
-            f"⚠️ Este post llevaba {ETIQUETA_VIDEO} y tenía que salir en video, "
-            f"pero el video no se pudo armar y salió como foto para no perderlo.\n\n"
+            f"⚠️ Se pidió que este post saliera en video (desde el panel) pero "
+            f"no se pudo armar y salió como foto para no perderlo.\n\n"
             f"Motivo: {video_caido[:400]}\n\n"
             f"La foto ya está publicada. Si querés el video igual, entrá a "
             f"📚 Publicados y pedíselo desde ahí."
         )
+
+    # El video EXTRA de #UR, aparte, en la página 4. La foto principal (la
+    # de arriba) ya salió; esto es nada más el video de más, si correspondía
+    # y se pudo armar.
+    if reel_extra_path:
+        _, err = publicar_video_extra(reel_extra_path, caption, post_id, text)
+        if err:
+            video_extra_caido = err
+    if video_extra_caido:
+        avisar(_aviso_video_extra_caido(video_extra_caido))
+
     return "published"
 
 
@@ -2725,17 +2840,19 @@ def main():
     # vez de gotear de a uno. El tope de APARTADOS_POR_CORRIDA está para que un
     # aluvión no haga eterna una sola vuelta; lo que sobre sale en la siguiente,
     # tres minutos después.
-    # Los de #lagranjavip (cuando la página 3 ya está lista) y los de #UR
-    # (cuando la página 4 ya está lista) entran en el mismo grupo y por el
-    # mismo motivo: tampoco tocan la página 2, así que tampoco tiene sentido
-    # que esperen el cupo pensado para ella.
+    # Los de #lagranjavip (cuando la página 3 ya está lista) entran en el
+    # mismo grupo y por el mismo motivo: tampoco tocan la página 2, así que
+    # tampoco tiene sentido que esperen el cupo pensado para ella. #UR ya NO
+    # entra acá: su foto sigue yendo al destino de siempre (la página 2,
+    # salvo que además lleve #lagranjavip), así que respeta el mismo cupo
+    # que cualquier post normal; el video extra de la página 4 no tiene cupo
+    # propio, sale junto con esa foto.
     ids_aparte = {p["id"] for p in candidatos
-                  if va_aparte(p.get("message") or "") or va_a_lagranja(p.get("message") or "")
-                  or va_a_ur(p.get("message") or "")}
+                  if va_aparte(p.get("message") or "") or va_a_lagranja(p.get("message") or "")}
     apartados = [p for p in candidatos if p["id"] in ids_aparte][:APARTADOS_POR_CORRIDA]
     normales = [p for p in candidatos if p["id"] not in ids_aparte]
     if apartados:
-        log(f"{len(apartados)} post(s) van sin esperar turno (apartados y/o #lagranjavip/#UR).")
+        log(f"{len(apartados)} post(s) van sin esperar turno (apartados y/o #lagranjavip).")
     new_posts = apartados + normales[:MAX_POSTS_PER_RUN]
 
     if not new_posts:
