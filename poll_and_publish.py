@@ -113,11 +113,13 @@ def env_num(nombre, por_defecto, tipo=float):
 MAX_POSTS_PER_RUN = env_num("MAX_POSTS_PER_RUN", 5, int)
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 
-# Anti-"todo de golpe": nunca se publica más de UN post por corrida, y además
-# tienen que haber pasado al menos MIN_MINUTES_BETWEEN_POSTS minutos desde la
-# publicación anterior (sea automática o manual por Telegram). Si se acumularon
-# varios posts pendientes, salen de a uno espaciados en vez de en ráfaga, que es
-# justo el patrón que Meta marca como comportamiento de bot.
+# Ya NO se usa para frenar la publicación automática (antes hacía esperar un
+# mínimo de minutos entre posts y publicaba de a uno por corrida; eso se sacó
+# a pedido, porque hacía tardar hasta 10 minutos un post que ya estaba listo
+# en la página 2). Queda la variable y el reloj (`mark_published_now`,
+# `minutes_since_last_publish`, más abajo) solo como dato informativo -para
+# el panel y los registros-, sin que nada dependa de ellos para decidir si
+# publica o espera.
 MIN_MINUTES_BETWEEN_POSTS = env_num("MIN_MINUTES_BETWEEN_POSTS", 5, float)
 
 # Cuántos posts se piden por página al buscar hacia atrás, y cuántas páginas
@@ -2095,7 +2097,7 @@ def _aviso_video_extra_caido(motivo):
     )
 
 
-def process_post(post, tmpdir, allow_publish=True):
+def process_post(post, tmpdir):
     post_id = post["id"]
     kind, images = classify_attachment(post)
 
@@ -2111,26 +2113,15 @@ def process_post(post, tmpdir, allow_publish=True):
         log(f"Post {post_id}: sin texto, se omite.")
         return "skipped_no_text"
 
-    # Este post SÍ es publicable. Si todavía no toca (ya se publicó algo hace
-    # poco, o ya salió uno en esta corrida), se deja pendiente tal cual: no se
-    # marca como procesado ni se gasta una llamada a Claude. Sale en la
-    # siguiente corrida que le toque.
-    # Los apartados no esperan turno. El espaciado existe para que la página 2
-    # no reciba varios posts de golpe, y estos no van a la página 2: van a tu
-    # chat, para que los repostees a mano en otro lado. Hacerlos esperar 10
-    # minutos era freno sin motivo.
-    # Lo mismo vale para #lagranjavip: no toca la página 2 (va a Universo
-    # Reality Tv Mexico), así que tampoco tiene sentido hacerlo esperar el
-    # espaciado de la página 2. #UR YA NO exime de esperar turno: su foto
-    # sigue saliendo en el destino de siempre (la 2, salvo que además lleve
-    # #lagranjavip), así que respeta el mismo espaciado que cualquier post
-    # normal; el video extra de la página 4 no tiene reloj propio, sale
-    # junto con esa foto cuando le toque.
-    if (not allow_publish and not DRY_RUN
-            and not va_aparte(text) and not va_a_lagranja(text)):
-        log(f"Post {post_id}: publicable, pero toca esperar el turno; queda pendiente.")
-        return "deferred"
-
+    # Ya NO hay espera de turno para ningún destino: todo post publicable se
+    # procesa apenas aparece, sea que vaya a la página 2 (Universo Reality),
+    # a la 3 (Universo Reality Tv Mexico, #lagranjavip) o traiga además el
+    # video extra de #UR a la página 4. Antes la página 2 tenía que esperar
+    # un mínimo de minutos desde la última publicación (freno pensado para no
+    # inundarla), y encima solo se publicaba UNO por corrida; eso hacía que
+    # un post nuevo tardara hasta 10 minutos en salir aunque ya estuviera
+    # listo. Se sacó a pedido: ahora la página 2 sale al mismo tiempo que
+    # las demás, sin ningún retraso artificial.
     local_images = []
     for i, url in enumerate(images):
         dest = tmpdir / f"{post_id}_{i}.jpg"
@@ -2860,48 +2851,28 @@ def main():
             f"Los {len(pendientes)} pendiente(s) están todos en pausa.")
         return
 
-    # Turno de publicación: como máximo UNO por corrida y respetando el tiempo
-    # mínimo desde la publicación anterior. Los posts que no son publicables
-    # (video, sin foto, sin texto, descartados por Claude) sí se siguen
-    # revisando y marcando, porque no ocupan turno.
-    urgente = new_posts[0]["id"] in prioridad
-    allow_publish = urgente or can_publish_now()
-    mins = minutes_since_last_publish()
-    if urgente:
-        log("Pediste que este saliera ya desde el panel: se salta la espera y "
-            "va primero.")
-    elif allow_publish:
-        log(f"Turno libre para publicar (última publicación hace "
-            f"{'nunca' if mins is None else f'{mins:.1f} min'}).")
-    else:
-        log(f"En espera: la última publicación fue hace {mins:.1f} min y el mínimo "
-            f"es {MIN_MINUTES_BETWEEN_POSTS:.0f} min. Los pendientes salen de a uno.")
+    # Ya NO hay turno de publicación ni espera mínima entre posts: cada post
+    # publicable de esta corrida sale apenas le toca procesarse, vaya a la
+    # página que vaya (2, 3, o con el video extra a la 4). Antes acá se
+    # frenaba a UNO por corrida y se esperaba MIN_MINUTES_BETWEEN_POSTS desde
+    # la última publicación; eso era justo lo que hacía tardar hasta 10
+    # minutos un post que ya estaba listo. Se sacó a pedido, para que la
+    # página 2 salga al mismo tiempo que las demás, sin retraso artificial.
+    log(f"{len(new_posts)} post(s) para publicar en esta corrida, sin espera entre ellos.")
 
-    pendientes_restantes = 0
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
         for post in new_posts:
             try:
-                status = process_post(post, tmpdir, allow_publish=allow_publish)
+                status = process_post(post, tmpdir)
             except Exception as e:
                 log(f"ERROR procesando {post['id']}: {e}")
                 continue
-
-            if status == "deferred":
-                # No se toca el estado: este post sigue pendiente para la
-                # próxima corrida. Y como ya se sabe que hay cola, no tiene
-                # sentido seguir revisando los de más atrás en esta corrida.
-                pendientes_restantes = len(new_posts) - new_posts.index(post)
-                break
 
             if status != "dry_run":
                 processed.add(post["id"])
                 state["processed"] = sorted(processed)
                 save_state(state)
-
-            if status == "published":
-                # Ya salió el de esta corrida: el resto espera su turno.
-                allow_publish = False
             time.sleep(2)
 
     # La foto de la cola se guardó ARRIBA, antes de publicar. Si en esta corrida
@@ -2924,10 +2895,6 @@ def main():
             cola.limpiar_control(p["id"] for p in quedan)
         except Exception as e:
             log(f"No se pudo actualizar la foto de la cola: {e}")
-
-    if pendientes_restantes:
-        log(f"Quedan {pendientes_restantes} post(s) en cola; se publicarán de a uno "
-            f"cada {MIN_MINUTES_BETWEEN_POSTS:.0f} min.")
 
 
 if __name__ == "__main__":
