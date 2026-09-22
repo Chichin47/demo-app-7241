@@ -167,11 +167,16 @@ jobs:
       # sobres cifrados: así se cambian con un solo empuje al repositorio y sin
       # tener que rehacer ningún secreto. Como se escriben DESPUÉS de los dos
       # sobres, este valor es el que manda.
+      #
+      # MIN_MINUTES_BETWEEN_POSTS ya NO frena la publicación automática (a
+      # pedido: hacía tardar hasta 10 min un post que ya estaba listo en la
+      # página 2, cuando la 3 y la 4 salen al toque). El código ya no lo usa
+      # para decidir si publica o espera; queda en 0 y solo se guarda como
+      # dato informativo en el panel y los registros.
       - name: Ritmo
         run: |
-          # Separación mínima entre publicaciones automáticas, en minutos.
-          echo "MIN_MINUTES_BETWEEN_POSTS=10" >> "$GITHUB_ENV"
-          echo "Separación mínima entre publicaciones: 10 min."
+          echo "MIN_MINUTES_BETWEEN_POSTS=0" >> "$GITHUB_ENV"
+          echo "Sin espera entre publicaciones: todo sale al mismo tiempo."
 
       # Página 1 (la que se LEE, donde escribís los originales): Universo
       # Reality Live (facebook.com/universorealitylives). Reemplaza a la
