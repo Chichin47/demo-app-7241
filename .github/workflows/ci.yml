@@ -69,6 +69,20 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # Modelos para reconocer las caras de los participantes (YuNet + SFace,
+      # ~40 MB entre los dos). Van en caché para no bajarlos en cada turno.
+      # Si un día no se pueden bajar, el turno sigue igual: solo los comandos
+      # de caras (/participante, /quien) avisan que no están disponibles.
+      - name: Modelos de caras (cache)
+        uses: actions/cache@v4
+        with:
+          path: modelos_rostros
+          key: rostros-yunet2023mar-sface2021dec
+
+      - name: Modelos de caras
+        continue-on-error: true
+        run: timeout 300 python rostros.py modelos
+
       # ffmpeg es lo que arma el video y mide el audio. Sin él NO hay reels:
       # el bot sigue publicando fotos, pero el video nunca sale. La máquina de
       # GitHub no lo trae puesto, así que se instala acá.
