@@ -305,6 +305,11 @@ TEXTO_AYUDA = (
     "formato o la hora desde el mismo mensaje. Si no elegís nada queda en "
     "🤖 Automático, que ahora mira la marca: si el original de la página 1 lleva "
     "#UR sale en video, y si no lleva nada sale en foto.\n\n"
+    "🎨 Diseños — mandame 2 a 5 fotos JUNTAS (como álbum) con la descripción y te "
+    "devuelvo la imagen armada en uno de los 5 estilos, con la descripción propuesta. "
+    "Botones: 🔁 Rehacer, otro estilo (1a Detalle, 2a Duelo, 3a Clásico, 4a Mosaico, "
+    "5a Círculos) y 📄 Archivo HD. Para pedir un cambio, respondé a la imagen con lo "
+    "que quieras. Por ahora los diseños NO se publican: solo vuelven acá.\n\n"
     "👥 Caras de los participantes — para que el bot sepa quién es quién:\n"
     "   /participante Pascal y después 5 a 8 fotos suyas SIN descripción (de "
     "frente, de perfil, con y sin gorra). Te devuelvo las caras que guardé.\n"
@@ -1524,6 +1529,10 @@ def handle_callback(cb, jobs):
     if accion == "s":
         handle_sin_dialogo_callback(cb, partes)
         return
+    if accion == "dz":
+        import diseno_tg
+        diseno_tg.atender_callback(sys.modules[__name__], cb, partes)
+        return
     if accion == "ro":
         import rostros_tg
         rostros_tg.atender_callback(sys.modules[__name__], cb, partes)
@@ -1696,6 +1705,16 @@ def main():
         nuevos_mensajes = rostros_tg.atender(sys.modules[__name__], nuevos_mensajes)
     except Exception as e:
         log(f"ERROR en rostros (se sigue igual): {e}")
+
+    # 1c. Diseños: los álbumes (2 a 5 fotos + descripción) se arman en uno de
+    #     los 5 estilos y vuelven a este chat con botones. Por ahora no se
+    #     publican en ninguna página. Las fotos sueltas siguen el camino de
+    #     siempre (publicar a mano).
+    try:
+        import diseno_tg
+        nuevos_mensajes = diseno_tg.atender(sys.modules[__name__], nuevos_mensajes)
+    except Exception as e:
+        log(f"ERROR en diseños (se sigue igual): {e}")
 
     # 2. Comandos del tablero (🔎 Revisar ahora, 📊 Último post, ❔ Ayuda).
     #    Se atienden antes de armar publicaciones para que un comando nunca se
