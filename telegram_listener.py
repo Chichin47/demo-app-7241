@@ -305,6 +305,12 @@ TEXTO_AYUDA = (
     "formato o la hora desde el mismo mensaje. Si no elegís nada queda en "
     "🤖 Automático, que ahora mira la marca: si el original de la página 1 lleva "
     "#UR sale en video, y si no lleva nada sale en foto.\n\n"
+    "👥 Caras de los participantes — para que el bot sepa quién es quién:\n"
+    "   /participante Pascal y después 5 a 8 fotos suyas SIN descripción (de "
+    "frente, de perfil, con y sin gorra). Te devuelvo las caras que guardé.\n"
+    "   /quien y una foto — te marco cada cara con su nombre. Si alguna está mal, "
+    "respondé «2 es Kevyn» y lo aprendo.\n"
+    "   /participantes — la lista. /olvidar Pascal — borra sus fotos.\n\n"
     "📌 Marca #topchefvip5 — si el original de la página 1 la lleva, ese post NO se "
     "publica en ningún lado. Se arma igual la imagen y la descripción, y te llegan "
     "acá al chat para que las uses donde quieras. Si además lleva #UR, también te "
@@ -357,6 +363,10 @@ def registrar_menu_comandos():
             {"command": "instagram", "description": "Si puede publicar en Instagram"},
             {"command": "publicados", "description": "Lo que ya salió (y pedir el video)"},
             {"command": "reiniciar", "description": "Cerrar el turno y arrancar uno limpio"},
+            {"command": "participante", "description": "Registrar la cara de alguien (+ fotos)"},
+            {"command": "participantes", "description": "Quiénes están registrados"},
+            {"command": "quien", "description": "Quién es quién en una foto"},
+            {"command": "olvidar", "description": "Borrar las fotos de un participante"},
             {"command": "ayuda", "description": "Cómo se usa el bot"},
         ]))
     except Exception as e:
@@ -1514,6 +1524,10 @@ def handle_callback(cb, jobs):
     if accion == "s":
         handle_sin_dialogo_callback(cb, partes)
         return
+    if accion == "ro":
+        import rostros_tg
+        rostros_tg.atender_callback(sys.modules[__name__], cb, partes)
+        return
 
     key = partes[1] if len(partes) > 1 else ""
     job = find_job(jobs, key)
@@ -1672,6 +1686,16 @@ def main():
             handle_callback(cb, jobs)
         except Exception as e:
             log(f"ERROR procesando botón: {e}")
+
+    # 1b. Rostros: registro de participantes (/participante, /quien, ...).
+    #     Va antes que todo lo demás para que las fotos de registro nunca
+    #     terminen en la cola de publicar. Si algo falla acá, los mensajes
+    #     siguen su camino normal: el reconocimiento nunca frena al bot.
+    try:
+        import rostros_tg
+        nuevos_mensajes = rostros_tg.atender(sys.modules[__name__], nuevos_mensajes)
+    except Exception as e:
+        log(f"ERROR en rostros (se sigue igual): {e}")
 
     # 2. Comandos del tablero (🔎 Revisar ahora, 📊 Último post, ❔ Ayuda).
     #    Se atienden antes de armar publicaciones para que un comando nunca se
