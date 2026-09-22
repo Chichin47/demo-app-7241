@@ -21,6 +21,7 @@ import re
 import tempfile
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -156,7 +157,6 @@ def generar(tg, job, estilo=None, instruccion=None, rehacer=False):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             rutas = _bajar(tg, job["fotos"], tmp)
-            edit = _edicion(tg, job)
             planes = job.setdefault("planes", [])
             anteriores = [p.get("resumen") for p in planes if p.get("resumen")]
             if estilo is None and planes and (rehacer or instruccion):
@@ -168,12 +168,20 @@ def generar(tg, job, estilo=None, instruccion=None, rehacer=False):
                                    _norm(instruccion or "")):
                     estilo = planes[-1]["plan"]["estilo"]
             salida = tmp / "diseno.png"
-            plan, datos = diseno.disenar(
-                job["descripcion"], rutas, salida, edit=edit, estilo_pedido=estilo,
-                instrucciones=job.get("instrucciones", [])[-4:],
-                anteriores=anteriores if (rehacer or instruccion or estilo) else None,
-                anterior_plan=planes[-1]["plan"] if planes else None,
-                pedir_claude=getattr(tg, "pedir_claude_diseno", None))
+            info = diseno.leer_caras(rutas)
+            # La descripción (pedido de siempre) y el diseño se piden a la vez:
+            # son dos llamadas a Claude independientes y así tarda la mitad.
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                f_edit = None if job.get("edit") else ex.submit(_edicion, tg, job)
+                f_datos = ex.submit(
+                    diseno.pedir_textos, job["descripcion"], job.get("edit"), info, estilo,
+                    job.get("instrucciones", [])[-4:],
+                    anteriores if (rehacer or instruccion or estilo) else None,
+                    getattr(tg, "pedir_claude_diseno", None))
+                edit = f_edit.result() if f_edit else job["edit"]
+                datos = f_datos.result()
+            plan = diseno.componer(datos, info, rutas, salida, edit=edit, estilo_pedido=estilo,
+                                   anterior_plan=planes[-1]["plan"] if planes else None)
             if datos.get("caption"):
                 edit["caption"] = str(datos["caption"]).strip()
             version = len(planes) + 1

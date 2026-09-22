@@ -65,7 +65,14 @@ la más importante a la menos. Usá los nombres tal cual te los paso.
 del post, escribí la descripción nueva completa; si no, null.
 
 Respondé SOLO un objeto JSON con estas claves: estilo, tono, personas, titular, \
-resaltado, subtitulo, frases, emojis, circulo, enfasis, etiquetas, caption."""
+resaltado, subtitulo, frases, emojis, circulo, enfasis, etiquetas, caption. \
+Completá SIEMPRE titular y frases aunque el estilo elegido no los use (así se \
+puede cambiar de estilo sin volver a preguntarte). Ejemplo de forma:
+{"estilo": "3a", "tono": "pelea", "personas": ["Pascal", "Kevyn"], \
+"titular": "¡PAGA TU DEUDA!", "resaltado": "DEUDA", "subtitulo": "PASCAL EXPLOTA CONTRA KEVYN 💥", \
+"frases": [{"persona": "Pascal", "texto": "PASCAL: ESTÁS PAGANDO TU DEUDA", "resaltado": "DEUDA", "emoji": "💸😡"}, \
+{"persona": "Kevyn", "texto": "KEVYN: FUERON 2 DÍAS, ESTABA ENFERMO", "resaltado": "ENFERMO", "emoji": "🤒"}], \
+"emojis": ["😡", "💥"], "circulo": "Pascal", "enfasis": "emojis", "etiquetas": ["PASCAL", "KEVYN"], "caption": null}"""
 
 
 def log(msg):
@@ -259,7 +266,66 @@ def _nombres_presentes(info):
     return vistos
 
 
-def armar_plan(datos, info, semilla, anterior=None, estilo_pedido=None):
+def _texto_de(x):
+    if isinstance(x, str):
+        return x.strip()
+    if isinstance(x, dict):
+        for k in ("texto", "text", "frase", "linea", "line"):
+            if isinstance(x.get(k), str) and x[k].strip():
+                return x[k].strip()
+    return ""
+
+
+def normalizar(datos, lineas=None):
+    """Deja la respuesta de Claude en la forma que espera el plan, venga como
+    venga (frases como texto suelto, claves en inglés, campos vacíos), y
+    completa lo que falte con las frases de la edición de siempre."""
+    datos = dict(datos or {})
+    tono = datos.get("tono") if datos.get("tono") in TONOS else "chisme"
+    frases = []
+    for f in datos.get("frases") or datos.get("phrases") or []:
+        texto = _texto_de(f)
+        if not texto:
+            continue
+        d = dict(f) if isinstance(f, dict) else {}
+        persona = d.get("persona") or d.get("nombre")
+        if not persona and ":" in texto[:25]:
+            persona = texto.split(":", 1)[0].strip().title()
+        texto, emo = estilos.separar_emojis(texto)
+        frases.append({"texto": texto, "persona": persona,
+                       "resaltado": d.get("resaltado") or d.get("highlight") or "",
+                       "emoji": d.get("emoji") or emo})
+    # Si Claude no dejó frases, se usan las de la edición de siempre.
+    for l in lineas or []:
+        if len(frases) >= 2:
+            break
+        texto = _texto_de(l)
+        if texto and all(texto != f["texto"] for f in frases):
+            texto, emo = estilos.separar_emojis(texto)
+            frases.append({"texto": texto, "persona": None, "resaltado": "", "emoji": emo})
+    emojis_tono = estilos.EMOJIS_POR_TONO.get(tono) or ["👀"]
+    for k, f in enumerate(frases):
+        if not f["emoji"]:
+            f["emoji"] = emojis_tono[k % len(emojis_tono)]
+        if not f["resaltado"]:
+            # la palabra más larga después del "NOMBRE:" es la que se destaca
+            cuerpo = f["texto"].split(":", 1)[-1]
+            palabras = [w.strip(".,¡!¿?") for w in cuerpo.split()]
+            f["resaltado"] = max(palabras, key=len) if palabras else ""
+    datos["frases"] = frases
+    titular = _texto_de(datos.get("titular")) or (frases[0]["texto"].split(":", 1)[-1].strip() if frases else "")
+    datos["titular"] = titular
+    if not datos.get("resaltado") and titular:
+        palabras = [w.strip(".,¡!¿?") for w in titular.split()]
+        datos["resaltado"] = max(palabras, key=len) if palabras else ""
+    datos["tono"] = tono
+    if not isinstance(datos.get("emojis"), list):
+        datos["emojis"] = [e for e in estilos.RE_EMOJI.findall(str(datos.get("emojis") or ""))]
+    return datos
+
+
+def armar_plan(datos, info, semilla, anterior=None, estilo_pedido=None, lineas=None):
+    datos = normalizar(datos, lineas)
     rng = random.Random(semilla)
     posibles = estilos_posibles(info)
     estilo = estilo_pedido or datos.get("estilo")
@@ -399,6 +465,22 @@ def armar_plan(datos, info, semilla, anterior=None, estilo_pedido=None):
 # 4. Todo junto
 # --------------------------------------------------------------------------
 
+def componer(datos, info, rutas, salida, *, edit=None, estilo_pedido=None,
+             anterior_plan=None, semilla=None):
+    """Con la respuesta de Claude ya en mano: arma el plan y dibuja."""
+    semilla = semilla if semilla is not None else random.randrange(1, 10 ** 9)
+    plan = armar_plan(datos, info, semilla, anterior_plan, estilo_pedido,
+                      lineas=(edit or {}).get("lines"))
+    t = plan["textos"]
+    log(f"Textos de la imagen: titular={t.get('titular')!r}, "
+        f"frases={[f.get('texto') for f in t.get('frases') or []]}, "
+        f"etiquetas={t.get('etiquetas')}, emojis={t.get('emojis')}.")
+    estilos.render(plan, rutas, salida)
+    log(f"Diseño {plan['estilo']} ({plan['tono']}, {plan['variante'].get('paleta')}, "
+        f"{plan['variante'].get('par')}).")
+    return plan
+
+
 def disenar(descripcion, rutas, salida, *, edit, info=None, estilo_pedido=None,
             instrucciones=None, anteriores=None, anterior_plan=None, semilla=None,
             pedir_claude=None):
@@ -406,9 +488,6 @@ def disenar(descripcion, rutas, salida, *, edit, info=None, estilo_pedido=None,
     info = info if info is not None else leer_caras(rutas)
     datos = pedir_textos(descripcion, edit, info, estilo_pedido, instrucciones,
                          anteriores, pedir_claude)
-    semilla = semilla if semilla is not None else random.randrange(1, 10 ** 9)
-    plan = armar_plan(datos, info, semilla, anterior_plan, estilo_pedido)
-    estilos.render(plan, rutas, salida)
-    log(f"Diseño {plan['estilo']} ({plan['tono']}, {plan['variante'].get('paleta')}, "
-        f"{plan['variante'].get('par')}).")
+    plan = componer(datos, info, rutas, salida, edit=edit, estilo_pedido=estilo_pedido,
+                    anterior_plan=anterior_plan, semilla=semilla)
     return plan, datos
