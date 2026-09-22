@@ -167,6 +167,14 @@ def main():
         mayor("publish_clock.json", "last_publish_ts")
         mayor("selfcheck_clock.json", "proximo")
 
+        # 5) Caras de los participantes (cifradas, no se pueden unir por
+        #    dentro): gana la copia guardada más tarde, así un registro o un
+        #    /olvidar recientes no se pierden por un turno viejo.
+        if "rostros.json" in R or "rostros.json" in L:
+            tr = j(R.get("rostros.json", "{}"), {}).get("actualizado") or 0
+            tl = j(L.get("rostros.json", "{}"), {}).get("actualizado") or 0
+            final["rostros.json"] = L["rostros.json"] if ("rostros.json" in L and tl >= tr) else R["rostros.json"]
+
         pu = len(j(final["processed_ids.json"], {}).get("processed", []))
         print(f"Unido: {pu} post(s) procesados, {len(mr)} publicado(s).")
 
