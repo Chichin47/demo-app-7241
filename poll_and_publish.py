@@ -1959,6 +1959,20 @@ def programa_de(texto):
     return "topchef" if lleva_marca_aparte(texto) else None
 
 
+def sin_hashtags(texto):
+    """Saca todos los hashtags de la descripción y limpia lo que queda.
+
+    Los renglones que eran solo hashtags desaparecen; el resto del texto
+    (diálogo, preámbulo, emojis) queda igual.
+    """
+    limpio = re.sub(r"(?<![\w&])#\w+", "", texto or "")
+    limpio = re.sub(r"[ \t]+([.,;:!?])", r"\1", limpio)
+    renglones = [re.sub(r"[ \t]{2,}", " ", r).rstrip() for r in limpio.split("\n")]
+    limpio = "\n".join(renglones)
+    limpio = re.sub(r"\n{3,}", "\n\n", limpio)
+    return limpio.strip()
+
+
 def quitar_etiqueta(texto):
     """Saca la marca de video del texto: es una orden interna, no contenido.
 
@@ -2190,6 +2204,11 @@ def process_post(post, tmpdir):
     if not caption:
         respaldo = (PROGRAMAS.get(programa) or {}).get("hashtag")
         caption = respaldo or (ETIQUETA_LAGRANJA if a_lagranja else "#LCDLF6")
+    if a_lagranja:
+        # Página 3 (Universo Reality Tv Mexico): solo la descripción, sin
+        # ningún hashtag. Los de La Granja VIP están siendo bloqueados y le
+        # quitan alcance al post (a pedido del administrador).
+        caption = sin_hashtags(caption)
 
     # La publicación PRINCIPAL (la foto, casi siempre) se arma acá. La foto
     # ya está lista arriba (`out_path`); el reel de esta sección es el que
