@@ -211,12 +211,24 @@ jobs:
       # lo viejo ni lo que él mismo dejó ahí cuando era el destino. Con este
       # cambio, en la primera corrida con la página nueva no se publica nada
       # de su historial: recién entra lo que se escriba de ahora en más.
+      #
+      # Oct 2026: la página 1 pasa a ser Universo Reality Tv Mexico
+      # (568676173170640, facebook.com/universorealitytvmexico), y el bot ya
+      # NO publica fotos en ninguna página (FOTOS_A_TELEGRAM=1): arma el
+      # diseño y lo manda al chat para publicarlo a mano. Lo único automático
+      # que queda es el video de #UR en la página 4. Su llave sale de
+      # USER_TOKEN igual que cuando era la página 3; PAGE2_TOKEN queda solo
+      # como respaldo. Para volver atrás: PAGE_ID_MAIN=152876094571606 y la
+      # variable de repositorio FOTOS_A_TELEGRAM en 0.
       - name: Pagina 1
         env:
           PAGE2_TOKEN: ${{ secrets.PAGE2_TOKEN }}
+          FOTOS_A_TELEGRAM_VAR: ${{ vars.FOTOS_A_TELEGRAM || '1' }}
         run: |
-          echo "PAGE_ID_MAIN=152876094571606" >> "$GITHUB_ENV"
-          echo "Página 1 (origen, donde escribís): Universo Reality Live (152876094571606)."
+          echo "PAGE_ID_MAIN=568676173170640" >> "$GITHUB_ENV"
+          echo "Página 1 (origen, donde escribís): Universo Reality Tv Mexico (568676173170640)."
+          echo "FOTOS_A_TELEGRAM=$FOTOS_A_TELEGRAM_VAR" >> "$GITHUB_ENV"
+          echo "Fotos a Telegram como diseño (sin publicar en páginas): $FOTOS_A_TELEGRAM_VAR"
           if [ -n "$PAGE2_TOKEN" ]; then
             echo "::add-mask::$PAGE2_TOKEN"
             echo "PAGE_TOKEN_MAIN=$PAGE2_TOKEN" >> "$GITHUB_ENV"
@@ -270,8 +282,10 @@ jobs:
       # apartarse al chat en vez de fallar el turno.
       - name: Pagina 3
         run: |
-          echo "PAGE_ID_TERCERA=568676173170640" >> "$GITHUB_ENV"
-          echo "Página 3 (aparte, solo #lagranjavip): Universo Reality Tv Mexico (568676173170640)."
+          # Desde Oct 2026 Universo Reality Tv Mexico es la página 1 (origen):
+          # ya no puede ser además un destino, así que la página 3 queda
+          # sin definir y nada se publica ahí.
+          echo "Página 3: sin destino (Universo Reality Tv Mexico ahora es la página 1)."
 
       # Página 4 (destino del VIDEO EXTRA de #UR): Universo Reality Tv Mexico
       # Lives (facebook.com/universorealitytvmexicolives). Es la EX página 1:
