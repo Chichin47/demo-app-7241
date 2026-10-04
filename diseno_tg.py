@@ -116,12 +116,44 @@ def _botones(key, estilo, posibles):
 
 
 def _bajar(tg, file_ids, carpeta):
+    """Baja las fotos del trabajo. Pueden ser archivos de Telegram (álbum
+    mandado al chat) o direcciones web (fotos que el bot tomó de la página 1
+    de Facebook, ver `encolar_desde_pagina`)."""
+    import requests
     rutas = []
     for i, fid in enumerate(file_ids, 1):
         destino = carpeta / f"foto{i}.jpg"
-        tg.download_telegram_photo(fid, destino)
+        if str(fid).startswith(("http://", "https://")):
+            r = requests.get(fid, timeout=60)
+            r.raise_for_status()
+            destino.write_bytes(r.content)
+        else:
+            tg.download_telegram_photo(fid, destino)
         rutas.append(destino)
     return rutas
+
+
+def encolar_desde_pagina(post_id, urls, descripcion, edit, chat_id, nota=None):
+    """Deja anotado un diseño para un post de la página 1.
+
+    Lo llama `poll_and_publish` (que no tiene el chat abierto): el trabajo
+    queda en `pendientes` y lo arma el listener en su próxima pasada, igual
+    que un álbum mandado a mano. Ya viene con la descripción y las frases
+    hechas, así que no se le vuelve a pedir eso a Claude.
+    """
+    d = cargar()
+    stub = str(post_id).split("_")[-1]
+    key = f"p{stub[-12:]}"
+    if key in d["jobs"]:
+        return key
+    d["jobs"][key] = {
+        "key": key, "chat_id": str(chat_id), "fotos": list(urls)[:MAX_FOTOS],
+        "descripcion": descripcion, "edit": edit, "creado": time.time(),
+        "estado": "nuevo", "origen": str(post_id), "nota": nota or "",
+    }
+    d.setdefault("pendientes", []).append([key, None, None, False])
+    guardar(d)
+    return key
 
 
 # --------------------------------------------------------------------------
@@ -188,6 +220,9 @@ def generar(tg, job, estilo=None, instruccion=None, rehacer=False):
             posibles = diseno.estilos_posibles(plan["fotos_info"])
             nombre = estilos.NOMBRES.get(plan["estilo"], plan["estilo"])
             cabeza = (f"🎨 Versión {version} · {nombre} ({plan['estilo']})\n\n")
+            if job.get("origen") and version == 1:
+                cabeza = ("📥 Post nuevo de la página 1 — listo para publicar a mano.\n"
+                          + (f"{job['nota']}\n" if job.get("nota") else "") + cabeza)
             pie = "\n\n💬 Respondé a esta imagen con lo que quieras cambiar."
             cuerpo = edit["caption"]
             caption = cabeza + cuerpo + pie
