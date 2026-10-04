@@ -30,6 +30,10 @@ ESPERA_ALBUM_SEG = 4          # para no cortar un álbum que todavía está lleg
 VIDA_SEG = 48 * 3600
 MAX_FOTOS = 5
 MAX_POR_PASADA = 3
+# Álbum (2+ fotos) cuya descripción lleva esta marca -> en vez de diseño se
+# arma un VIDEO narrado (el mismo que sale con #UR desde la página 1) y vuelve
+# al chat para subirlo a mano. No se publica en ninguna página.
+MARCA_VIDEO = re.compile(r"#\s*universoreality(?![\w])", re.IGNORECASE)
 ETIQUETAS = {"1a": "1a Detalle", "2a": "2a Duelo", "3a": "3a Clásico",
              "4a": "4a Mosaico", "5a": "5a Círculos"}
 
@@ -260,6 +264,65 @@ def _plan_de(job, preview_id=None):
     return (job.get("planes") or [None])[-1]
 
 
+def pide_video(texto):
+    return bool(MARCA_VIDEO.search(texto or ""))
+
+
+def generar_video(tg, job):
+    """Álbum con #universoreality: arma el video narrado (voz, subtítulos,
+    título) con las fotos del álbum y lo devuelve al chat. Nada se publica."""
+    bot = tg.bot
+    chat_id = job["chat_id"]
+    texto = MARCA_VIDEO.sub("", job.get("descripcion") or "").strip()
+    texto = bot.quitar_etiqueta(texto)
+    aviso = tg.reply(chat_id, "🎬 Armando el video con tus fotos… (tarda unos minutos)")
+    aviso_id = (aviso or {}).get("result", {}).get("message_id")
+    try:
+        if not bot.voz.hay_voz():
+            tg.reply(chat_id, "❌ No puedo armar el video: falta la voz (VOZ_API_KEY).")
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            rutas = _bajar(tg, job["fotos"], tmp)
+            edit = bot.ask_claude(texto, len(rutas), manual=True, con_video=True)
+            guion = bot.guion_de_reel(edit, texto)
+            if not guion:
+                tg.reply(chat_id, "❌ Claude no dejó un guion narrado con esa descripción. "
+                                  "Probá mandarla con más contexto (qué pasó y quiénes).")
+                return
+            reel = bot.armar_reel(rutas, guion, tmp)
+            caption = bot.quitar_etiqueta(bot.acotar_preambulo((edit.get("caption") or "").strip()))
+            caption = MARCA_VIDEO.sub("", caption).strip() or texto
+            ok = _enviar_video(tg, chat_id, reel,
+                               f"🎬 Video listo para subir a mano.\n\n{guion['titulo']}")
+            if ok:
+                tg.reply(chat_id, caption[:4096])
+                job["estado"] = "cerrado"
+                _log(tg, f"{job['key']}: video enviado al chat.")
+    except Exception as e:  # noqa: BLE001
+        _log(tg, f"ERROR armando el video de {job['key']}: {e}")
+        tg.reply(chat_id, f"❌ No pude armar el video: {e}")
+    finally:
+        if aviso_id:
+            tg.borrar_mensaje(chat_id, aviso_id)
+
+
+def _enviar_video(tg, chat_id, ruta, caption):
+    import requests
+    try:
+        with open(ruta, "rb") as fh:
+            r = requests.post(
+                f"https://api.telegram.org/bot{tg.TELEGRAM_BOT_TOKEN}/sendVideo",
+                data={"chat_id": chat_id, "caption": caption[:1024], "supports_streaming": True},
+                files={"video": (Path(ruta).name, fh, "video/mp4")}, timeout=300)
+        r.raise_for_status()
+        return True
+    except Exception as e:  # noqa: BLE001
+        _log(tg, f"No se pudo mandar el video: {e}")
+        tg.reply(chat_id, f"❌ El video se armó pero no lo pude mandar: {e}")
+        return False
+
+
 def archivo_hd(tg, job, preview_id=None):
     import estilos
     elegido = _plan_de(job, preview_id)
@@ -388,6 +451,8 @@ def atender(tg, mensajes, ahora=None):
             job = d["jobs"][por_pedido[resp]]
             job["descripcion"] = texto
             job.pop("pedido_texto", None)
+            if pide_video(texto):
+                job["tipo"] = "video"
             trabajos.append((job["key"], None, None, False))
             continue
         n = _norm(texto)
@@ -420,6 +485,8 @@ def atender(tg, mensajes, ahora=None):
         fotos = a["fotos"][:MAX_FOTOS]
         job = {"key": key, "chat_id": a["chat_id"] or tg.TELEGRAM_CHAT_ID, "fotos": fotos,
                "descripcion": a["caption"], "creado": time.time(), "estado": "nuevo"}
+        if pide_video(a["caption"]):
+            job["tipo"] = "video"
         d["jobs"][key] = job
         if len(a["fotos"]) > MAX_FOTOS:
             tg.reply(job["chat_id"], f"Llegaron {len(a['fotos'])} fotos; uso las primeras {MAX_FOTOS}.")
@@ -432,15 +499,27 @@ def atender(tg, mensajes, ahora=None):
         trabajos.append((key, None, None, False))
     # 4. Generar (lo más lento: va al final). Como mucho MAX_POR_PASADA por
     #    pasada, para no pasarnos del tiempo que el runner le da al chat; lo
-    #    que sobra queda anotado y sale en la pasada siguiente.
+    #    que sobra queda anotado y sale en la pasada siguiente. Un video
+    #    cuenta como una pasada entera (tarda varios minutos).
     cola = [list(t) for t in d.get("pendientes", [])] + [list(t) for t in trabajos]
-    d["pendientes"] = cola[MAX_POR_PASADA:]
+    ahora_toca, resto, carga = [], [], 0
+    for t in cola:
+        peso = MAX_POR_PASADA if (d["jobs"].get(t[0]) or {}).get("tipo") == "video" else 1
+        if not resto and (carga == 0 or carga + peso <= MAX_POR_PASADA):
+            ahora_toca.append(t)
+            carga += peso
+        else:
+            resto.append(t)
+    d["pendientes"] = resto
     guardar(d)
-    for key, estilo, instr, rehacer in cola[:MAX_POR_PASADA]:
+    for key, estilo, instr, rehacer in ahora_toca:
         job = d["jobs"].get(key)
         if not job:
             continue
-        generar(tg, job, estilo=estilo, instruccion=instr, rehacer=rehacer)
+        if job.get("tipo") == "video":
+            generar_video(tg, job)
+        else:
+            generar(tg, job, estilo=estilo, instruccion=instr, rehacer=rehacer)
         guardar(d)
     return restantes
 
