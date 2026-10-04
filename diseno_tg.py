@@ -106,8 +106,7 @@ def _botones(key, estilo, posibles):
     otros = [{"text": ETIQUETAS[e], "callback_data": f"dz|es|{key}|{e}"}
              for e in posibles if e != estilo]
     filas = [[{"text": "🔁 Rehacer", "callback_data": f"dz|rh|{key}"},
-              {"text": "📄 Archivo HD", "callback_data": f"dz|hd|{key}"}],
-             [{"text": "📸 Publicarlo en IG", "callback_data": f"dz|ig|{key}"}]]
+              {"text": "📄 Archivo HD", "callback_data": f"dz|hd|{key}"}]]
     if otros:
         filas.append(otros[:3])
         if otros[3:]:

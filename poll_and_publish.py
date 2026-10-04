@@ -1712,6 +1712,32 @@ def mandar_aparte(image_path, caption, reel_path, post_id, video_caido=None,
     return True
 
 
+def publicar_ig_clasico(out_path, caption, local_images, edit, tmpdir, post_id):
+    """Modo diseño: sube a Instagram la imagen editada de siempre, sin pasar
+    por ninguna página de Facebook. Instagram exige bajar la foto de una
+    dirección web, así que se deja una copia OCULTA en la página vinculada al
+    Instagram (Tv Mexico Lives) y se borra al terminar. Nunca revienta."""
+    try:
+        if PAGE_ID_CUARTA and PAGE_TOKEN_CUARTA:
+            pagina, llave = PAGE_ID_CUARTA, PAGE_TOKEN_CUARTA
+        else:
+            pagina, llave = PAGE_ID_MAIN, PAGE_TOKEN_MAIN
+        sueltas = []
+        if not insta.forma(out_path, log=lambda *a: None)[0]:
+            sueltas = armar_diapositivas(local_images, edit, tmpdir)
+        ig = insta.publicar_foto(pagina, llave, None, caption, ruta=out_path,
+                                 diapositivas=sueltas, log=log)
+        if ig:
+            log(f"Post {post_id}: edición de siempre publicada en Instagram ({ig}).")
+        else:
+            avisar("⚠️ Este post no se pudo subir a Instagram (la edición de siempre). "
+                   "El diseño para Facebook llega igual; si querés, subilo a mano.")
+        return ig
+    except Exception as e:
+        log(f"Instagram quedó afuera esta vez ({e}).")
+        return None
+
+
 def mandar_a_diseno(post_id, urls, descripcion, edit, nota=None):
     """Deja el post anotado para que el chat lo arme como diseño (modo
     FOTOS_A_TELEGRAM). Lo arma el listener en su próxima pasada."""
@@ -2355,6 +2381,10 @@ def process_post(post, tmpdir):
             avisar(f"⚠️ Este post llevaba {ETIQUETA_VIDEO} pero el video para Universo "
                    f"Reality Tv Mexico Lives no se pudo mandar.\n\nMotivo: "
                    f"{str(video_extra_caido)[:400]}\n\nEl diseño de la foto llega igual al chat.")
+        # Instagram: la edición de SIEMPRE (fotos apiladas con frases, o
+        # carrusel si no entra), en automático como antes. El diseño nuevo
+        # es solo para la subida manual a Facebook.
+        publicar_ig_clasico(out_path, caption, local_images, edit, tmpdir, post_id)
         lineas = [{"text": l.get("text")} for l in edit.get("lines") or [] if l.get("text")]
         mandar_a_diseno(post_id, images, texto_limpio, {"caption": caption, "lines": lineas})
         return "a_diseno"
