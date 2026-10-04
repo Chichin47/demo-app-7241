@@ -476,6 +476,157 @@ def _franja_pie(fuente, es_clip, segundos, tmp, pie_h=PIE_H):
 
 
 # ---------------------------------------------------------------------------
+# Fotos verticales a pantalla completa (álbumes mixtos)
+# ---------------------------------------------------------------------------
+
+# Hasta qué proporción (ancho/alto) una foto cuenta como vertical: 9:16 es
+# 0,56, 3:4 es 0,75 y 4:5 es 0,80. Todo lo que pase de acá (cuadradas y
+# horizontales) va en el molde de siempre, con el difuminado.
+PROPORCION_VERTICAL = 0.85
+
+# En pantalla completa la foto no puede subir y bajar (el título le taparía
+# las caras), así que esos movimientos se cambian por otros que no la corren
+# en vertical.
+MOVIMIENTO_VERTICAL = {
+    "paneo_arriba": "alejar",
+    "paneo_abajo": "acercar",
+    "deriva_diagonal": "paneo_derecha",
+}
+
+
+def es_vertical(foto):
+    try:
+        from PIL import Image
+        with Image.open(foto) as im:
+            ancho, alto = im.size
+        return alto > 0 and (ancho / alto) <= PROPORCION_VERTICAL
+    except Exception:
+        return False
+
+
+def _caras_en(img_pil):
+    """Cajas (x, y, w, h) de las caras, si el detector está a mano. Si no, []."""
+    try:
+        import numpy as np
+        import rostros
+        bgr = np.array(img_pil.convert("RGB"))[:, :, ::-1].copy()
+        return [tuple(float(v) for v in f[:4]) for f in rostros.detectar(bgr)]
+    except Exception as e:
+        log(f"Sin detector de caras para encuadrar ({e}); centro la foto.")
+        return []
+
+
+def _desenfocada(img, ancho, alto):
+    """La foto ampliada a pantalla completa, desenfocada y un punto más oscura
+    (lo mismo que hace DESENFOQUE en ffmpeg, pero con Pillow)."""
+    from PIL import ImageEnhance, ImageFilter, ImageOps
+    fondo = ImageOps.fit(img.convert("RGB"), (ancho // 4, alto // 4))
+    fondo = fondo.filter(ImageFilter.GaussianBlur(34 / 4))
+    fondo = ImageEnhance.Brightness(fondo).enhance(0.90)
+    fondo = ImageEnhance.Color(fondo).enhance(1.15)
+    return fondo.resize((ancho, alto))
+
+
+def preparar_vertical(foto, salida, banner_h, escala=2):
+    """Deja la foto vertical lista para ocupar TODA la pantalla.
+
+    Se encuadra con las caras: la cara más alta queda debajo del título. Si la
+    foto no da para bajarla tanto (por ejemplo una 9:16 justa con la cara
+    arriba), se corre hacia abajo lo que haga falta y el hueco de arriba, que
+    queda detrás del título, se rellena con la misma foto desenfocada. Arriba
+    va además una sombra suave para que el título se lea siempre.
+    Sale al doble de tamaño (escala), que es lo que usa el movimiento.
+    """
+    from PIL import Image
+    W, H = LIENZO_W * escala, LIENZO_H * escala
+    tope = (banner_h + 40) * escala          # la cara tiene que empezar de acá para abajo
+    img = Image.open(foto).convert("RGB")
+    caras = _caras_en(img)
+    f = max(W / img.width, H / img.height)   # cubrir la pantalla
+    ew, eh = int(round(img.width * f)), int(round(img.height * f))
+    grande = img.resize((ew, eh), Image.LANCZOS)
+    ox, oy = (ew - W) // 2, (eh - H) // 2
+    baja = 0
+    if caras:
+        cx = sum(x + w / 2 for x, y, w, h in caras) / len(caras) * f
+        ox = int(min(max(cx - W / 2, 0), ew - W))
+        arriba = min(y for x, y, w, h in caras) * f
+        abajo = max(y + h for x, y, w, h in caras) * f
+        # Cara(s) centradas un poco por debajo de la mitad...
+        oy = int(min(max((arriba + abajo) / 2 - H * 0.56, 0), eh - H))
+        # ...y nunca debajo del título.
+        if arriba - oy < tope:
+            oy = int(max(0, arriba - tope))
+            if arriba - oy < tope:
+                baja = int(min(tope - (arriba - oy), H * 0.30))
+    lienzo = _desenfocada(img, W, H) if baja else Image.new("RGB", (W, H))
+    recorte = grande.crop((ox, oy, ox + W, oy + H - baja))
+    lienzo.paste(recorte, (0, baja))
+    # Sombra suave arriba, detrás del título.
+    sombra = Image.new("L", (1, banner_h * escala))
+    for i in range(banner_h * escala):
+        sombra.putpixel((0, i), int(150 * (1 - i / (banner_h * escala)) ** 1.6))
+    negro = Image.new("RGB", (W, banner_h * escala), (0, 0, 0))
+    lienzo.paste(negro, (0, 0), sombra.resize((W, banner_h * escala)))
+    lienzo.save(salida, quality=95)
+    return salida
+
+
+def _fondo_horizontal(foto, salida, centro_y, centro_h):
+    """Cuadro fijo de pantalla completa para una toma horizontal en un video
+    mixto: la misma foto desenfocada de fondo (arriba y abajo). La foto nítida
+    con movimiento se monta encima, en la franja del medio."""
+    from PIL import Image
+    img = Image.open(foto)
+    _desenfocada(img, LIENZO_W, LIENZO_H).save(salida, quality=92)
+    return salida
+
+
+def _tomas_mixtas(fotos, segundos, tmp, banner_h, centro_h):
+    """El video de fondo completo (1080x1920) cuando hay fotos verticales.
+
+    Cada toma usa el molde de SU foto: vertical a pantalla completa, o el de
+    siempre (franja nítida al medio y difuminado) si es horizontal. Después se
+    encadenan con los mismos cruces de siempre; el título, los subtítulos y la
+    voz van encima, igual que en cualquier reel.
+    """
+    verticales = [es_vertical(f) for f in fotos]
+    plan = plan_de_tomas(len(fotos), segundos)
+    if CRUCE > 0 and len(plan) > 1:
+        extra = CRUCE * (len(plan) - 1) / len(plan)
+        plan = [(f, m, d + extra) for f, m, d in plan]
+    preparadas = {}
+    piezas = []
+    for i, (n, movimiento, dura) in enumerate(plan):
+        salida = tmp / f"toma_{i:02d}.mp4"
+        if verticales[n]:
+            if n not in preparadas:
+                preparadas[n] = preparar_vertical(fotos[n], tmp / f"vertical_{n}.jpg", banner_h)
+            movimiento = MOVIMIENTO_VERTICAL.get(movimiento, movimiento)
+            _clip_de_foto(preparadas[n], dura, LIENZO_W, LIENZO_H, salida, movimiento)
+        else:
+            fondo = tmp / f"fondo_{n}.jpg"
+            if not fondo.exists():
+                _fondo_horizontal(fotos[n], fondo, banner_h, centro_h)
+            centro = _clip_de_foto(fotos[n], dura, LIENZO_W, centro_h,
+                                   tmp / f"centro_{i:02d}.mp4", movimiento)
+            cuadros = max(2, int(round(dura * FPS)))
+            _correr(
+                ["ffmpeg", "-y", "-v", "error",
+                 "-loop", "1", "-framerate", str(FPS), "-t", f"{dura:.3f}", "-i", str(fondo),
+                 "-i", str(centro),
+                 "-filter_complex", f"[0:v][1:v]overlay=0:{banner_h},format=yuv420p[v]",
+                 "-map", "[v]", "-frames:v", str(cuadros),
+                 "-c:v", "libx264", "-crf", "18", "-preset", "veryfast", str(salida)],
+                f"toma horizontal {i}",
+            )
+        piezas.append(salida)
+    tipos = ["vertical" if verticales[n] else "horizontal" for n, _, _ in plan]
+    log(f"Video mixto: {len(piezas)} tomas ({', '.join(tipos)}).")
+    return _encadenar(piezas, tmp / "tomas.mp4", tmp, arranque=int(round(segundos * 10)))
+
+
+# ---------------------------------------------------------------------------
 # Banner (título + sticker), dibujado con Pillow
 # ---------------------------------------------------------------------------
 
@@ -664,14 +815,22 @@ def armar(salida, fotos=None, clip=None, titulo="", audio=None, subtitulos=None,
         fuente_fondo = clip or fotos[0]
         fuente_pie = clip or (fotos[-1] if len(fotos) > 1 else fotos[0])
 
-        fondo = _franja_fondo(fuente_fondo, bool(clip), total, tmp)
-        centro = _franja_central(fotos, clip, total, tmp, centro_h)
-        pie = _franja_pie(fuente_pie, bool(clip), total, tmp, pie_h)
+        # Si alguna foto es vertical, cada toma lleva el molde de su foto
+        # (vertical a pantalla completa, horizontal con difuminado). Si son
+        # todas horizontales, queda exactamente como siempre.
+        mixto = (not clip) and any(es_vertical(f) for f in fotos)
         banner = banner_png(titulo, tmp / "banner.png", sticker, banner_h)
-
-        # 3) Se apilan las capas
-        entradas = ["-i", str(fondo), "-i", str(centro), "-i", str(pie), "-i", str(banner)]
-        indice = 4
+        if mixto:
+            tomas = _tomas_mixtas(fotos, total, tmp, banner_h, centro_h)
+            entradas = ["-i", str(tomas), "-i", str(banner)]
+            indice = 2
+        else:
+            fondo = _franja_fondo(fuente_fondo, bool(clip), total, tmp)
+            centro = _franja_central(fotos, clip, total, tmp, centro_h)
+            pie = _franja_pie(fuente_pie, bool(clip), total, tmp, pie_h)
+            # 3) Se apilan las capas
+            entradas = ["-i", str(fondo), "-i", str(centro), "-i", str(pie), "-i", str(banner)]
+            indice = 4
         idx_adorno = None
         if adorno and Path(adorno).exists():
             entradas += ["-i", str(adorno)]
@@ -688,11 +847,14 @@ def armar(salida, fotos=None, clip=None, titulo="", audio=None, subtitulos=None,
             idx_musica = indice
             indice += 1
 
-        pasos = [
-            f"[0:v][1:v]overlay=0:{banner_h}[a]",
-            f"[a][2:v]overlay=0:{banner_h + centro_h}[b]",
-            "[b][3:v]overlay=0:0[c]",
-        ]
+        if mixto:
+            pasos = ["[0:v][1:v]overlay=0:0[c]"]
+        else:
+            pasos = [
+                f"[0:v][1:v]overlay=0:{banner_h}[a]",
+                f"[a][2:v]overlay=0:{banner_h + centro_h}[b]",
+                "[b][3:v]overlay=0:0[c]",
+            ]
         ultima = "[c]"
         if idx_adorno is not None:
             pasos.append(
