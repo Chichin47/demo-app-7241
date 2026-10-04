@@ -1712,6 +1712,16 @@ def mandar_aparte(image_path, caption, reel_path, post_id, video_caido=None,
     return True
 
 
+def mandar_a_diseno(post_id, urls, descripcion, edit, nota=None):
+    """Deja el post anotado para que el chat lo arme como diseño (modo
+    FOTOS_A_TELEGRAM). Lo arma el listener en su próxima pasada."""
+    import diseno_tg
+    key = diseno_tg.encolar_desde_pagina(post_id, urls, descripcion, edit,
+                                         TELEGRAM_CHAT_ID, nota=nota)
+    log(f"Post {post_id}: no se publica en ninguna página; va como diseño al chat ({key}).")
+    return key
+
+
 def publish_photo(image_path, caption, pagina_id=None, pagina_token=None):
     """Publica la foto en una página. Por defecto, la página 2 (de siempre).
 
@@ -1864,6 +1874,28 @@ def solo_telegram():
     """
     valor = (os.environ.get("SOLO_TELEGRAM") or "0").strip().lower()
     return valor in ("1", "si", "sí", "on", "true", "yes")
+
+
+def fotos_a_telegram():
+    """¿Las fotos ya no se publican en ninguna página y van como diseño al chat?
+
+    Se enciende con FOTOS_A_TELEGRAM=1. Con esto la página 1 se lee como
+    siempre, pero la foto editada NO sale a Facebook ni a Instagram: se arma
+    en uno de los estilos de diseño y llega al chat de Telegram, lista para
+    bajarla y que un administrador la publique a mano. Lo único que sigue
+    saliendo solo es el video extra de #UR en la página 4 (Universo Reality
+    Tv Mexico Lives), como siempre.
+
+    El freno de mano (SOLO_TELEGRAM) y la marca de apartar siguen mandando
+    por encima de esto.
+    """
+    valor = (os.environ.get("FOTOS_A_TELEGRAM") or "0").strip().lower()
+    return valor in ("1", "si", "sí", "on", "true", "yes")
+
+
+def va_como_diseno(texto):
+    """¿Este post sigue el camino de `fotos_a_telegram`?"""
+    return fotos_a_telegram() and not solo_telegram() and not lleva_marca_aparte(texto)
 
 
 def lleva_marca_aparte(texto):
@@ -2170,8 +2202,22 @@ def process_post(post, tmpdir):
     # página 4 (ver `video_extra_listo`, que suma el chequeo de que esa
     # página esté lista).
     quiere_video = pide_video(text)
+    # Modo diseño (FOTOS_A_TELEGRAM): la foto no sale a ninguna página, va
+    # como diseño al chat. Tampoco se puede omitir: lo decide el administrador.
+    como_diseno = va_como_diseno(text)
     edit = ask_claude(texto_limpio, len(local_images), con_video=con_video,
-                      programa=programa, aparte=(es_aparte or a_lagranja or quiere_video))
+                      programa=programa,
+                      aparte=(es_aparte or a_lagranja or quiere_video or como_diseno))
+    if edit.get("skip") and como_diseno:
+        log(f"Post {post_id}: Claude quiso omitirlo ({edit.get('skip_reason')}); "
+            f"va igual como diseño al chat, con el texto original.")
+        mandar_a_diseno(post_id, images, texto_limpio,
+                        {"caption": sin_hashtags(texto_limpio), "lines": []},
+                        nota="⚠️ Claude no encontró diálogo aprovechable; revisá las frases.")
+        if quiere_video:
+            avisar(f"⚠️ Este post llevaba {ETIQUETA_VIDEO} pero Claude no dejó guion, así "
+                   f"que no salió el video para Universo Reality Tv Mexico Lives.")
+        return "a_diseno"
     if edit.get("skip"):
         if es_aparte or a_lagranja or quiere_video:
             # Red de seguridad: no debería pasar con el pedido reforzado, pero
@@ -2204,7 +2250,7 @@ def process_post(post, tmpdir):
     if not caption:
         respaldo = (PROGRAMAS.get(programa) or {}).get("hashtag")
         caption = respaldo or (ETIQUETA_LAGRANJA if a_lagranja else "#LCDLF6")
-    if a_lagranja:
+    if a_lagranja or como_diseno:
         # Página 3 (Universo Reality Tv Mexico): solo la descripción, sin
         # ningún hashtag. Los de La Granja VIP están siendo bloqueados y le
         # quitan alcance al post (a pedido del administrador).
@@ -2291,6 +2337,27 @@ def process_post(post, tmpdir):
         log(f"[DRY_RUN] Preview guardado: {preview_img.name}. Caption: {caption}")
         send_telegram_preview(out_path, caption, details, post_id)
         return "dry_run"
+
+    # Modo diseño: la foto NO sale a Facebook ni a Instagram. Se manda como
+    # diseño al chat para publicarla a mano, y lo único automático que queda
+    # es el video extra de #UR en la página 4, como siempre.
+    if como_diseno:
+        if reel_extra_path:
+            _, err = publicar_video_extra(reel_extra_path, caption, post_id, text)
+            if err:
+                video_extra_caido = err
+            else:
+                _anotar_arranque(guion.get("narracion") if guion else "")
+        elif reel_path:
+            # Video pedido a mano desde el panel (sin #UR): va al chat.
+            mandar_video_al_chat(reel_path, caption, None, log=log)
+        if video_extra_caido:
+            avisar(f"⚠️ Este post llevaba {ETIQUETA_VIDEO} pero el video para Universo "
+                   f"Reality Tv Mexico Lives no se pudo mandar.\n\nMotivo: "
+                   f"{str(video_extra_caido)[:400]}\n\nEl diseño de la foto llega igual al chat.")
+        lineas = [{"text": l.get("text")} for l in edit.get("lines") or [] if l.get("text")]
+        mandar_a_diseno(post_id, images, texto_limpio, {"caption": caption, "lines": lineas})
+        return "a_diseno"
 
     # Apartado: acá se corta. Todo lo de arriba ya se hizo (la imagen está
     # armada, la descripción escrita y, si correspondía, los videos
@@ -2782,6 +2849,22 @@ def main():
         for p in posts:
             log("DEBUG raw post ->\n" + json.dumps(p, ensure_ascii=False, indent=2))
     pendientes = [p for p in posts if p["id"] not in processed]
+    # Red de seguridad: nunca tomar como original algo que publicó el propio
+    # bot (pasaría si alguna vez la página 1 también fuera un destino).
+    propios = set()
+    try:
+        if PUBLISHED_MAP_PATH.exists():
+            propios = set(json.loads(PUBLISHED_MAP_PATH.read_text()).keys())
+    except Exception:
+        propios = set()
+    ajenos = [p for p in pendientes if p["id"] in propios]
+    if ajenos:
+        for p in ajenos:
+            processed.add(p["id"])
+        state["processed"] = sorted(processed)
+        save_state(state)
+        log(f"{len(ajenos)} post(s) de la página 1 los publicó el propio bot; se saltan.")
+        pendientes = [p for p in pendientes if p["id"] not in propios]
     pendientes.sort(key=lambda p: p.get("created_time", ""))  # más viejo primero
 
     # ----------------------------------------------------------------------
@@ -2858,7 +2941,8 @@ def main():
     # que cualquier post normal; el video extra de la página 4 no tiene cupo
     # propio, sale junto con esa foto.
     ids_aparte = {p["id"] for p in candidatos
-                  if va_aparte(p.get("message") or "") or va_a_lagranja(p.get("message") or "")}
+                  if va_aparte(p.get("message") or "") or va_a_lagranja(p.get("message") or "")
+                  or va_como_diseno(p.get("message") or "")}
     apartados = [p for p in candidatos if p["id"] in ids_aparte][:APARTADOS_POR_CORRIDA]
     normales = [p for p in candidatos if p["id"] not in ids_aparte]
     if apartados:
