@@ -106,7 +106,8 @@ def _botones(key, estilo, posibles):
     otros = [{"text": ETIQUETAS[e], "callback_data": f"dz|es|{key}|{e}"}
              for e in posibles if e != estilo]
     filas = [[{"text": "🔁 Rehacer", "callback_data": f"dz|rh|{key}"},
-              {"text": "📄 Archivo HD", "callback_data": f"dz|hd|{key}"}]]
+              {"text": "📄 Archivo HD", "callback_data": f"dz|hd|{key}"}],
+             [{"text": "📸 Publicarlo en IG", "callback_data": f"dz|ig|{key}"}]]
     if otros:
         filas.append(otros[:3])
         if otros[3:]:
@@ -252,13 +253,17 @@ def generar(tg, job, estilo=None, instruccion=None, rehacer=False):
             tg.borrar_mensaje(chat_id, aviso_id)
 
 
-def archivo_hd(tg, job, preview_id=None):
-    import estilos
-    elegido = None
+def _plan_de(job, preview_id=None):
+    """El diseño de ESA imagen (si se tocó el botón de una versión vieja), o el último."""
     for p in job.get("planes", []):
         if preview_id and p.get("preview") == preview_id:
-            elegido = p
-    elegido = elegido or (job.get("planes") or [None])[-1]
+            return p
+    return (job.get("planes") or [None])[-1]
+
+
+def archivo_hd(tg, job, preview_id=None):
+    import estilos
+    elegido = _plan_de(job, preview_id)
     if not elegido:
         tg.reply(job["chat_id"], "Ese diseño ya no está disponible.")
         return
@@ -268,6 +273,72 @@ def archivo_hd(tg, job, preview_id=None):
         salida = tmp / f"universo_reality_{job['key']}_{elegido['plan']['estilo']}.png"
         estilos.render(json.loads(json.dumps(elegido["plan"])), rutas, salida)
         _enviar_documento(tg, job["chat_id"], salida, "📄 En alta, sin la compresión de Telegram.")
+
+
+# --------------------------------------------------------------------------
+# Instagram
+# --------------------------------------------------------------------------
+
+def _pagina_ig(bot):
+    """Página de Facebook vinculada al Instagram (@universorealityvip cuelga de
+    Tv Mexico Lives, la página 4). Solo se usa para dejar ahí una copia OCULTA
+    de la imagen —Instagram exige bajarla de una dirección web— que se borra
+    apenas termina; en Facebook no se publica nada."""
+    if getattr(bot, "PAGE_ID_CUARTA", "") and getattr(bot, "PAGE_TOKEN_CUARTA", ""):
+        return bot.PAGE_ID_CUARTA, bot.PAGE_TOKEN_CUARTA
+    return bot.PAGE_ID_MAIN, bot.PAGE_TOKEN_MAIN
+
+
+def pedir_confirmacion_ig(tg, job, chat_id, preview_id):
+    elegido = _plan_de(job, preview_id)
+    if not elegido:
+        tg.reply(chat_id, "Ese diseño ya no está disponible.")
+        return
+    ya = str(elegido.get("preview")) in [str(x) for x in job.get("ig", {})]
+    aviso = ("⚠️ Esta versión YA se publicó en Instagram. ¿Publicarla otra vez?"
+             if ya else "📸 ¿Publico ESTA versión en Instagram con su descripción?")
+    tg.reply(chat_id, aviso, reply_markup={"inline_keyboard": [[
+        {"text": "✅ Sí, publicar", "callback_data": f"dz|igok|{job['key']}|{elegido.get('preview') or ''}"},
+        {"text": "✖️ No", "callback_data": f"dz|igno|{job['key']}"}]]})
+
+
+def publicar_en_ig(tg, job, chat_id, preview_id=None):
+    import estilos
+    import insta
+    from PIL import Image
+    elegido = _plan_de(job, preview_id)
+    if not elegido:
+        tg.reply(chat_id, "Ese diseño ya no está disponible.")
+        return None
+    caption = ((job.get("edit") or {}).get("caption") or job.get("descripcion") or "").strip()
+    aviso = tg.reply(chat_id, "⏳ Publicando en Instagram… (puede tardar hasta un par de minutos)")
+    aviso_id = (aviso or {}).get("result", {}).get("message_id")
+    ig_post = None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            rutas = _bajar(tg, job["fotos"], tmp)
+            png = tmp / "diseno.png"
+            estilos.render(json.loads(json.dumps(elegido["plan"])), rutas, png)
+            jpg = tmp / "diseno_ig.jpg"   # Instagram solo acepta JPEG
+            with Image.open(png) as im:
+                im.convert("RGB").save(jpg, "JPEG", quality=95)
+            page_id, token = _pagina_ig(tg.bot)
+            ig_post = insta.publicar_foto(page_id, token, None, caption[:2200],
+                                          ruta=jpg, log=lambda m: _log(tg, m))
+    except Exception as e:  # noqa: BLE001
+        _log(tg, f"ERROR publicando {job['key']} en Instagram: {e}")
+    finally:
+        if aviso_id:
+            tg.borrar_mensaje(chat_id, aviso_id)
+    if ig_post:
+        job.setdefault("ig", {})[str(elegido.get("preview"))] = ig_post
+        tg.reply(chat_id, "✅ Publicado en Instagram.")
+        _log(tg, f"{job['key']}: publicado en Instagram ({ig_post}).")
+    else:
+        tg.reply(chat_id, "❌ No se pudo publicar en Instagram. Revisá /instagram para ver "
+                          "el estado de la cuenta, o bajá el 📄 Archivo HD y subilo a mano.")
+    return ig_post
 
 
 # --------------------------------------------------------------------------
@@ -398,6 +469,25 @@ def atender_callback(tg, cb, partes):
     elif accion == "hd":
         tg.answer_callback(cb["id"], "Te mando el archivo…")
         archivo_hd(tg, job, message_id)
+    elif accion == "ig":
+        tg.answer_callback(cb["id"], "¿Confirmás?")
+        pedir_confirmacion_ig(tg, job, chat_id, message_id)
+    elif accion == "igno":
+        tg.answer_callback(cb["id"], "No se publica.")
+        try:
+            tg.api("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
+                   reply_markup={"inline_keyboard": []})
+        except Exception:  # noqa: BLE001
+            pass
+    elif accion == "igok":
+        tg.answer_callback(cb["id"], "Publicando en Instagram…")
+        try:
+            tg.api("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
+                   reply_markup={"inline_keyboard": []})
+        except Exception:  # noqa: BLE001
+            pass
+        preview = int(partes[3]) if len(partes) > 3 and partes[3].isdigit() else None
+        publicar_en_ig(tg, job, chat_id, preview)
     elif accion == "rh":
         tg.answer_callback(cb["id"], "Rehaciendo…")
         generar(tg, job, rehacer=True)
