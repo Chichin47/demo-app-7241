@@ -707,6 +707,11 @@ def _envolver(dibujo, texto, fuente, ancho_max):
     return renglones or [""]
 
 
+# Dónde queda el centro del bloque del título dentro del último banner dibujado
+# (lo usa el gancho para saber cuánto bajarlo).
+_CENTRO_TITULO = {}
+
+
 def banner_png(titulo, salida, sticker=None, banner_h=BANNER_H):
     """Dibuja el banner de arriba: sticker, título en amarillo y emojis.
 
@@ -749,6 +754,7 @@ def banner_png(titulo, salida, sticker=None, banner_h=BANNER_H):
         alto_bloque = len(renglones) * alto_renglon + hueco_emojis + alto_emojis
         # Centro del bloque, sin que se pase ni por arriba ni por abajo.
         tope = max(alto_bloque / 2 + 10, min(y_titulo, banner_h - 18 - alto_bloque / 2))
+        _CENTRO_TITULO[str(salida)] = tope
         y = tope - alto_bloque / 2 + alto_renglon / 2
         for renglon in renglones:
             dibujo.text(
@@ -766,6 +772,80 @@ def banner_png(titulo, salida, sticker=None, banner_h=BANNER_H):
     salida.parent.mkdir(parents=True, exist_ok=True)
     lienzo.save(salida)
     return salida
+
+
+# ---------------------------------------------------------------------------
+# Gancho: el título arranca en el medio de la pantalla y después sube
+# ---------------------------------------------------------------------------
+
+# A qué altura va el centro del título al arrancar (proporción del alto): a la
+# altura de la boca / el pecho de la persona, que es donde se ve en la portada
+# y donde Facebook e Instagram no lo tapan con sus botones.
+GANCHO_ALTURA = 0.58
+# Cuánto se queda el título en el medio: hasta que termina la primera frase de
+# la narración, pero nunca menos ni más que esto.
+GANCHO_MIN, GANCHO_MAX = 2.0, 5.0
+GANCHO_SUBIDA = 0.35   # lo que tarda en subir a su lugar
+_RE_PALABRA_ACTIVA = re.compile(r"\{\\c[^}]*\}([^{]*)\{\\c")
+_RE_DIALOGO = re.compile(r"^Dialogue: (\d+),([^,]+),([^,]+),(.*)$")
+
+
+def _seg(t):
+    h, m, s = t.split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def _hms(x):
+    h = int(x // 3600)
+    m = int((x % 3600) // 60)
+    return f"{h}:{m:02d}:{x - h * 3600 - m * 60:05.2f}"
+
+
+def fin_del_gancho(subtitulos):
+    """Segundo en que termina la primera frase narrada (con tope)."""
+    try:
+        for linea in Path(subtitulos).read_text(encoding="utf-8").splitlines():
+            m = _RE_DIALOGO.match(linea)
+            if not m:
+                continue
+            activa = _RE_PALABRA_ACTIVA.search(m.group(4))
+            fin = _seg(m.group(3))
+            if activa and re.search(r"[.!?…]\s*$", activa.group(1).strip()):
+                return max(GANCHO_MIN, min(GANCHO_MAX, fin))
+            if fin >= GANCHO_MAX:
+                return GANCHO_MAX
+    except Exception:
+        pass
+    return 3.0
+
+
+def subtitulos_despues_de(subtitulos, desde, salida):
+    """Copia del .ass sin nada antes de `desde`: mientras el título está en el
+    medio, los subtítulos no aparecen (irían encima)."""
+    lineas = []
+    for linea in Path(subtitulos).read_text(encoding="utf-8").splitlines():
+        m = _RE_DIALOGO.match(linea)
+        if m:
+            ini, fin = _seg(m.group(2)), _seg(m.group(3))
+            if fin <= desde:
+                continue
+            if ini < desde:
+                linea = f"Dialogue: {m.group(1)},{_hms(desde)},{m.group(3)},{m.group(4)}"
+        lineas.append(linea)
+    Path(salida).write_text("\n".join(lineas) + "\n", encoding="utf-8")
+    return salida
+
+
+def _y_del_titulo(banner, hasta):
+    """Expresión de ffmpeg para la altura del banner: en el medio hasta
+    `hasta`, sube suave en GANCHO_SUBIDA segundos y queda arriba."""
+    centro = _CENTRO_TITULO.get(str(banner))
+    if centro is None:
+        return "0"
+    abajo = int(LIENZO_H * GANCHO_ALTURA - centro)
+    d = GANCHO_SUBIDA
+    return (f"if(lt(t,{hasta:.2f}),{abajo},"
+            f"if(lt(t,{hasta + d:.2f}),{abajo}*(1-(1-cos(PI*(t-{hasta:.2f})/{d}))/2),0))")
 
 
 # ---------------------------------------------------------------------------
@@ -847,13 +927,24 @@ def armar(salida, fotos=None, clip=None, titulo="", audio=None, subtitulos=None,
             idx_musica = indice
             indice += 1
 
+        # Gancho: sin sticker, el título arranca a la altura del pecho (portada
+        # y primeros segundos) y sube cuando termina la primera frase.
+        y_titulo = "0"
+        gancho = None
+        if not hay_sticker and titulo and subtitulos and Path(subtitulos).exists():
+            gancho = fin_del_gancho(subtitulos)
+            y_titulo = _y_del_titulo(banner, gancho)
+            subtitulos = subtitulos_despues_de(subtitulos, gancho + GANCHO_SUBIDA,
+                                               tmp / "subs_gancho.ass")
+            log(f"Gancho: título en el medio hasta {gancho:.1f} s, después sube.")
+        capa_titulo = f"overlay=x=0:y='{y_titulo}':eval=frame[c]"
         if mixto:
-            pasos = ["[0:v][1:v]overlay=0:0[c]"]
+            pasos = [f"[0:v][1:v]{capa_titulo}"]
         else:
             pasos = [
                 f"[0:v][1:v]overlay=0:{banner_h}[a]",
                 f"[a][2:v]overlay=0:{banner_h + centro_h}[b]",
-                "[b][3:v]overlay=0:0[c]",
+                f"[b][3:v]{capa_titulo}",
             ]
         ultima = "[c]"
         if idx_adorno is not None:

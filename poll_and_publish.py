@@ -721,9 +721,29 @@ PROGRAMAS = {
 }
 
 
+# El reality del que hablan HOY los posts (cambia de temporada en temporada,
+# por eso va en una variable). Sin esto Claude adivinaba por los nombres de los
+# participantes —varios estuvieron en La Casa de los Famosos— y metía ese
+# programa en notas de La Granja VIP.
+PROGRAMA_ACTUAL = (os.environ.get("PROGRAMA_ACTUAL") or "La Granja VIP").strip()
+HASHTAG_ACTUAL = (os.environ.get("HASHTAG_ACTUAL") or "#LaGranjaVIP").strip()
+
+
+def contexto_programa_actual():
+    return (
+        f"\nEL PROGRAMA: salvo que el texto original nombre claramente otro reality, "
+        f"este post es de {PROGRAMA_ACTUAL}, y las personas que aparecen son "
+        f"participantes de {PROGRAMA_ACTUAL}. NO adivines el programa por los nombres: "
+        f"varios participantes estuvieron antes en otros realities. Nunca menciones La "
+        f"Casa de los Famosos ni ningún otro reality si el texto original no lo nombra, "
+        f"ni en la descripción, ni en el título, ni en la narración. Los hashtags, de "
+        f"{PROGRAMA_ACTUAL} (por ejemplo {HASHTAG_ACTUAL}).\n"
+    )
+
+
 def prompt_sistema(con_video, programa=None):
     """El pedido que se le manda a Claude, con o sin la parte del video."""
-    extra = (PROGRAMAS.get(programa) or {}).get("contexto", "")
+    extra = (PROGRAMAS.get(programa) or {}).get("contexto", "") or contexto_programa_actual()
     return (_PEDIDO_BASE + (_PEDIDO_VIDEO if con_video else "") + extra
             + _PEDIDO_CIERRE)
 
@@ -2275,7 +2295,7 @@ def process_post(post, tmpdir):
     caption = quitar_etiqueta(acotar_preambulo(edit.get("caption", "").strip()))
     if not caption:
         respaldo = (PROGRAMAS.get(programa) or {}).get("hashtag")
-        caption = respaldo or (ETIQUETA_LAGRANJA if a_lagranja else "#LCDLF6")
+        caption = respaldo or (ETIQUETA_LAGRANJA if a_lagranja else HASHTAG_ACTUAL)
     if a_lagranja or como_diseno:
         # Página 3 (Universo Reality Tv Mexico): solo la descripción, sin
         # ningún hashtag. Los de La Granja VIP están siendo bloqueados y le
@@ -2566,7 +2586,7 @@ def rehacer_como_video(pedido, tmpdir):
         return False, "no salió guion para narrar, así que no hay video"
 
     caption = quitar_etiqueta(
-        acotar_preambulo((edit.get("caption") or "").strip())) or "#LCDLF6"
+        acotar_preambulo((edit.get("caption") or "").strip())) or HASHTAG_ACTUAL
     reel_path = armar_reel(local_images, guion, tmpdir)
 
     if DRY_RUN:
@@ -2656,7 +2676,7 @@ def rehacer_como_foto(pedido, tmpdir):
     compose_image(spec_path, out_path)
     caption = quitar_etiqueta(acotar_preambulo((edit.get("caption") or "").strip()))
     if not caption:
-        caption = (PROGRAMAS.get(programa) or {}).get("hashtag", "#LCDLF6")
+        caption = (PROGRAMAS.get(programa) or {}).get("hashtag", HASHTAG_ACTUAL)
 
     if DRY_RUN:
         log(f"[DRY_RUN] Foto encargada lista para {pid}, no se publica.")

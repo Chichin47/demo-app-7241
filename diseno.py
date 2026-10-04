@@ -14,6 +14,7 @@ el archivo en alta) y la ruta del PNG. Nada de esto publica en ninguna
 página: por ahora todo vuelve al chat de Telegram para revisarlo.
 """
 import json
+import os
 import random
 import time
 
@@ -23,8 +24,7 @@ ESTILOS_VALIDOS = ["1a", "2a", "3a", "4a", "5a"]
 TONOS = ["pelea", "sorpresa", "tristeza", "triunfo", "intriga", "verguenza", "chisme"]
 
 SISTEMA = """Sos el editor gráfico de Universo Reality TV, una página de Facebook e \
-Instagram sobre reality shows de México (La Casa de los Famosos, La Granja VIP y \
-parecidos). Te paso la nota de un post, las frases que ya se escribieron para la \
+Instagram sobre reality shows de México. Te paso la nota de un post, las frases que ya se escribieron para la \
 imagen y quién aparece en cada foto. Elegís UNO de estos 5 estilos de imagen y \
 escribís sus textos:
 
@@ -192,6 +192,11 @@ def pedir_textos(descripcion, edit, info, estilo_pedido=None, instrucciones=None
         f"Fotos ({len(info)}):\n{resumen_fotos(info)}\n\n"
         f"Estilos posibles con estas fotos: {', '.join(posibles)}."
     )
+    programa = (os.environ.get("PROGRAMA_ACTUAL") or "La Granja VIP").strip()
+    pedido += (f"\n\nPrograma: salvo que la nota nombre claramente otro reality, es "
+               f"{programa}. No adivines el programa por los nombres de los "
+               f"participantes y nunca menciones La Casa de los Famosos ni otro reality "
+               f"si la nota no lo nombra.")
     if estilo_pedido:
         pedido += f"\n\nEl administrador pidió el estilo {estilo_pedido}: usá ese."
     if instrucciones:
