@@ -55,7 +55,7 @@ PAGE_TOKEN_BACKUP = os.environ["PAGE_TOKEN_BACKUP"]
 PAGE_ID_TERCERA = os.environ.get("PAGE_ID_TERCERA", "").strip()
 PAGE_TOKEN_TERCERA = os.environ.get("PAGE_TOKEN_TERCERA", "").strip()
 
-# Página 4 (Universo Reality Tv Mexico Lives, la ex página 1): destino aparte,
+# Página 4 (Universo Reality Tv Live 24/7, la ex página 1): destino aparte,
 # solo para los posts de la página 1 que llevan la marca #UR (ETIQUETA_VIDEO,
 # más abajo). Esa marca sigue forzando el formato video como siempre; esto
 # suma que ADEMÁS cambia el destino. Igual que la página 3, es OPCIONAL: si no
@@ -1984,7 +1984,7 @@ def pagina_ur_lista():
 
 def video_extra_listo(texto):
     """¿Hay que darle a este post, ADEMÁS de su foto de siempre, un video
-    aparte en la página 4 (Universo Reality Tv Mexico Lives)?
+    aparte en la página 4 (Universo Reality Tv Live 24/7)?
 
     #UR ya NO elige una página distinta para el post entero: la foto sigue
     saliendo donde siempre le tocaría (la página 3 si además lleva
@@ -2139,7 +2139,7 @@ def armar_reel(local_images, guion, tmpdir):
 
 
 def publicar_video_extra(reel_extra_path, caption, post_id, texto_original=""):
-    """Publica en la página 4 (Universo Reality Tv Mexico Lives) el video
+    """Publica en la página 4 (Universo Reality Tv Live 24/7) el video
     EXTRA de un post con #UR.
 
     Es "extra" porque la publicación principal de ese mismo post (la foto,
@@ -2165,7 +2165,7 @@ def publicar_video_extra(reel_extra_path, caption, post_id, texto_original=""):
     # `process_post`, que es quien tiene el guion a mano; acá solo se
     # publica.
     log(f"Post {post_id} -> video extra de #UR publicado como reel {video_id} "
-        f"en página 4 (Universo Reality Tv Mexico Lives).")
+        f"en página 4 (Universo Reality Tv Live 24/7).")
     try:
         insta.publicar_reel(PAGE_ID_CUARTA, PAGE_TOKEN_CUARTA, video_id, caption,
                             reel_extra_path, log=log)
@@ -2182,7 +2182,7 @@ def _aviso_video_extra_caido(motivo):
     return (
         f"⚠️ Este post llevaba {ETIQUETA_VIDEO}: la foto ya salió en su "
         f"página de siempre, pero el video extra para Universo Reality Tv "
-        f"Mexico Lives (página 4) no se pudo mandar.\n\n"
+        f"Live 24/7 (página 4) no se pudo mandar.\n\n"
         f"Motivo: {str(motivo or '')[:400]}\n\n"
         f"La foto ya está publicada; si querés el video igual, entrá a "
         f"📚 Publicados y pedíselo desde ahí, o subilo a mano a esa página."
@@ -2262,7 +2262,7 @@ def process_post(post, tmpdir):
                         nota="⚠️ Claude no encontró diálogo aprovechable; revisá las frases.")
         if quiere_video:
             avisar(f"⚠️ Este post llevaba {ETIQUETA_VIDEO} pero Claude no dejó guion, así "
-                   f"que no salió el video para Universo Reality Tv Mexico Lives.")
+                   f"que no salió el video para Universo Reality Tv Live 24/7.")
         return "a_diseno"
     if edit.get("skip"):
         if es_aparte or a_lagranja or quiere_video:
@@ -2360,7 +2360,7 @@ def process_post(post, tmpdir):
         if quiere_video:
             nota_extra = (
                 "\n--- VIDEO EXTRA #UR (página 4) ---\n"
-                + ("se arma y se manda a Universo Reality Tv Mexico Lives\n"
+                + ("se arma y se manda a Universo Reality Tv Live 24/7\n"
                    if reel_extra_path else
                    f"NO se pudo armar/mandar: {video_extra_caido}\n")
             )
@@ -2399,7 +2399,7 @@ def process_post(post, tmpdir):
             mandar_video_al_chat(reel_path, caption, None, log=log)
         if video_extra_caido:
             avisar(f"⚠️ Este post llevaba {ETIQUETA_VIDEO} pero el video para Universo "
-                   f"Reality Tv Mexico Lives no se pudo mandar.\n\nMotivo: "
+                   f"Reality Tv Live 24/7 no se pudo mandar.\n\nMotivo: "
                    f"{str(video_extra_caido)[:400]}\n\nEl diseño de la foto llega igual al chat.")
         # Instagram: la edición de SIEMPRE (fotos apiladas con frases, o
         # carrusel si no entra), en automático como antes. El diseño nuevo
