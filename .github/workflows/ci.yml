@@ -307,8 +307,14 @@ jobs:
       # en vez de mandarse (no se pierde el post entero por eso).
       - name: Pagina 4
         run: |
-          echo "PAGE_ID_CUARTA=179820098545682" >> "$GITHUB_ENV"
-          echo "Página 4 (video extra de #UR): Universo Reality Tv Mexico Lives (179820098545682)."
+          # Oct 2026: el video de #UR pasa a Universo Reality Tv Live 24/7
+          # (facebook.com/universorealitytvlive247). 114777251210683 es su ID
+          # de página (el "delegate_page" de su perfil); 100083156305443 es el
+          # ID de perfil y NO sirve para la Graph API. Mexico Lives ya no recibe
+          # nada; solo se la sigue usando (IG_PAGINA) para ubicar la cuenta de
+          # Instagram, que está vinculada a ella.
+          echo "PAGE_ID_CUARTA=114777251210683" >> "$GITHUB_ENV"
+          echo "Página 4 (video de #UR): Universo Reality Tv Live 24/7 (114777251210683)."
 
       # Siempre se parte de la ÚLTIMA versión del estado que hay en el
       # repositorio, no de la del commit con el que arrancó este turno.
