@@ -1590,7 +1590,7 @@ def send_telegram_preview(image_path, caption, details, post_id):
         return False
 
 
-def mandar_video_al_chat(reel_path, caption, enlace=None, log=log):
+def mandar_video_al_chat(reel_path, caption, enlace=None, log=log, aviso=None):
     """Manda al chat el MISMO video que se acaba de publicar, con su
     descripción en un mensaje aparte para copiar de un toque.
 
@@ -1602,7 +1602,7 @@ def mandar_video_al_chat(reel_path, caption, enlace=None, log=log):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-    aviso = "🎬 Copia del video que acaba de salir."
+    aviso = aviso or "🎬 Copia del video que acaba de salir."
     if enlace:
         aviso += f"\n{enlace}"
     try:
@@ -2334,7 +2334,9 @@ def process_post(post, tmpdir):
     reel_extra_path = None
     video_extra_caido = None
     if quiere_video:
-        if not pagina_ur_lista():
+        # En modo diseño el video de #UR no se publica en ninguna página: solo
+        # va al chat, así que no hace falta que la página 4 esté lista.
+        if not pagina_ur_lista() and not como_diseno:
             video_extra_caido = ("la página 4 todavía no está lista (falta "
                                  "configurarla o Meta no dio su llave hoy)")
         elif not voz.hay_voz():
@@ -2388,18 +2390,21 @@ def process_post(post, tmpdir):
     # diseño al chat para publicarla a mano, y lo único automático que queda
     # es el video extra de #UR en la página 4, como siempre.
     if como_diseno:
+        # #UR: el video se arma igual pero NO se publica en Facebook ni en
+        # Instagram; va solo al chat para subirlo a mano (a pedido, oct 2026).
         if reel_extra_path:
-            _, err = publicar_video_extra(reel_extra_path, caption, post_id, text)
-            if err:
-                video_extra_caido = err
-            else:
+            if mandar_video_al_chat(reel_extra_path, caption, None, log=log,
+                                    aviso="🎬 Video de #UR listo para subir a mano "
+                                          "(no se publicó en ninguna página)."):
                 _anotar_arranque(guion.get("narracion") if guion else "")
+            else:
+                video_extra_caido = "no se pudo mandar el video al chat"
         elif reel_path:
             # Video pedido a mano desde el panel (sin #UR): va al chat.
             mandar_video_al_chat(reel_path, caption, None, log=log)
         if video_extra_caido:
-            avisar(f"⚠️ Este post llevaba {ETIQUETA_VIDEO} pero el video para Universo "
-                   f"Reality Tv Live 24/7 no se pudo mandar.\n\nMotivo: "
+            avisar(f"⚠️ Este post llevaba {ETIQUETA_VIDEO} pero el video no se pudo "
+                   f"armar o mandar al chat.\n\nMotivo: "
                    f"{str(video_extra_caido)[:400]}\n\nEl diseño de la foto llega igual al chat.")
         # Instagram: la edición de SIEMPRE (fotos apiladas con frases, o
         # carrusel si no entra), en automático como antes. El diseño nuevo
